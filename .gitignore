@@ -1,0 +1,11 @@
+# Temporary and generated files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.log
+logs/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
