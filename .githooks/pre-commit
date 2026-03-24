@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+export PATH="$HOME/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$repo_root" ]; then
+  exit 0
+fi
+
+cd "$repo_root"
+
+if [ ! -f "Cargo.toml" ]; then
+  exit 0
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "cargo not found in PATH" >&2
+  echo "Install Rust tooling from https://rustup.rs/" >&2
+  exit 1
+fi
+
+tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t autospec-precommit)"
+cleanup() { rm -rf "$tmpdir"; }
+trap cleanup EXIT
+
+staged_rs_list="$tmpdir/staged-rs.txt"
+touch "$staged_rs_list"
+
+while IFS= read -r -d '' file; do
+  case "$file" in
+    *.rs) printf '%s\n' "$file" >>"$staged_rs_list" ;;
+  esac
+done < <(git diff --cached --name-only -z --diff-filter=ACMR)
+
+if [ ! -s "$staged_rs_list" ]; then
+  exit 0
+fi
+
+need_stash=0
+if ! git diff --quiet --exit-code; then
+  need_stash=1
+elif [ -n "$(git ls-files --others --exclude-standard 2>/dev/null || true)" ]; then
+  need_stash=1
+fi
+
+if [ "$need_stash" -eq 1 ]; then
+  git stash push -q --keep-index -u -m "autospec pre-commit" || true
+fi
+
+echo "Running cargo fmt --all..."
+cargo fmt --all
+
+while IFS= read -r file; do
+  [ -n "$file" ] || continue
+  if [ -f "$file" ]; then
+    git add -- "$file"
+  fi
+done < "$staged_rs_list"
+
+while IFS= read -r -d '' changed; do
+  if grep -Fxq "$changed" "$staged_rs_list"; then
+    continue
+  fi
+  git checkout -- "$changed" >/dev/null 2>&1 || true
+done < <(git diff --name-only -z)
+
+if [ "$need_stash" -eq 1 ]; then
+  if ! git stash pop -q; then
+    echo "" >&2
+    echo "Failed to re-apply unstaged changes after formatting." >&2
+    echo "Resolve the conflicts, then commit again." >&2
+    exit 1
+  fi
+fi
+
+exit 0

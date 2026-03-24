@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+export PATH="$HOME/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$repo_root" ]; then
+  exit 0
+fi
+
+cd "$repo_root"
+
+if [ ! -f "Cargo.toml" ]; then
+  exit 0
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "cargo not found in PATH" >&2
+  echo "Install Rust tooling from https://rustup.rs/" >&2
+  exit 1
+fi
+
+echo "Running pre-push validation..."
+
+echo "Checking formatting..."
+cargo fmt --all --check
+
+echo "Checking clippy..."
+cargo clippy --all-targets --all-features -- -D warnings
+
+echo "Running tests..."
+cargo test --all-targets
+
+echo "Building ci profile..."
+cargo build --profile ci
+
+echo "Pre-push checks passed."

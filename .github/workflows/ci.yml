@@ -1,0 +1,106 @@
+name: Quality Assurance
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust_checks:
+    name: Rust Quality Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: ci-${{ runner.os }}
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-targets
+
+      - name: Build binary (ci profile)
+        run: cargo build --profile ci
+
+      - name: Validate package metadata
+        run: cargo package --allow-dirty --no-verify
+
+      - name: Binary smoke test with fake agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$GITHUB_WORKSPACE/target/ci/autospec"
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "$tmp_dir"' EXIT
+          mkdir -p "$tmp_dir/docs"
+          cp "$GITHUB_WORKSPACE/tests/fixtures/docs-basic/product.md" "$tmp_dir/docs/product.md"
+
+          cd "$tmp_dir"
+          "$bin" docs/product.md \
+            --agent custom \
+            --agent-cmd "python3 $GITHUB_WORKSPACE/tests/support/fake_agent.py --mode no-op --prompt {prompt} --cwd {cwd} --log {log}" \
+            --no-commit \
+            --allow-dirty
+
+          test -f .autospec/results.tsv
+          grep -q "docs/product.md" .autospec/results.tsv
+
+  windows_sanity:
+    name: Windows Binary Sanity
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: ci-${{ runner.os }}
+
+      - name: Build binary (ci profile)
+        shell: pwsh
+        run: cargo build --profile ci
+
+      - name: Sanity-check binary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bin = Join-Path $env:GITHUB_WORKSPACE 'target/ci/autospec.exe'
+          if (-not (Test-Path $bin)) {
+            throw "Binary not found at $bin"
+          }
+
+          & $bin --version

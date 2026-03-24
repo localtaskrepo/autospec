@@ -258,7 +258,27 @@ fn print_change_summary(
     delta: &crate::diff::ScopeDelta,
     action: &str,
 ) {
-    if plan.focus_doc.is_none() {
+    if let Some(focus) = plan.focus_doc.as_ref() {
+        if delta.files.len() > 1 {
+            let others = delta
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .filter(|path| *path != focus)
+                .collect::<Vec<_>>();
+            if others.is_empty() {
+                println!("  -> changes detected ({}), {action}", delta.display);
+            } else {
+                println!(
+                    "  -> changes ({}), {action} - also touched: {}",
+                    delta.display,
+                    others.join(", ")
+                );
+            }
+        } else {
+            println!("  -> changes detected ({}), {action}", delta.display);
+        }
+    } else {
         println!(
             "  -> {} file(s) changed ({}), {action}",
             delta.files.len(),
@@ -280,25 +300,6 @@ fn print_change_summary(
                 .unwrap_or_default();
             println!("    {} ({})", file.path, file_delta);
         }
-    } else if delta.files.len() > 1 {
-        let focus = plan.focus_doc.as_ref().unwrap();
-        let others = delta
-            .files
-            .iter()
-            .map(|file| file.path.as_str())
-            .filter(|path| *path != focus)
-            .collect::<Vec<_>>();
-        if others.is_empty() {
-            println!("  -> changes detected ({}), {action}", delta.display);
-        } else {
-            println!(
-                "  -> changes ({}), {action} - also touched: {}",
-                delta.display,
-                others.join(", ")
-            );
-        }
-    } else {
-        println!("  -> changes detected ({}), {action}", delta.display);
     }
 }
 

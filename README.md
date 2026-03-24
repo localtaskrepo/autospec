@@ -1,5 +1,8 @@
 # autospec
 
+autospec is now implemented as a standalone Rust CLI at the repository root.
+The legacy Python implementation remains in `legacy/` as migration history and behavioral reference.
+
 autospec started as a practical experiment inside a project that leaned hard into writing specs before writing code.
 
 We deliberately built up a large set of product, architecture, UI, and design docs before implementation because we wanted coding agents to have a solid documentation base to work from. That helped, but it also exposed a new bottleneck: the docs themselves were often close to usable without being quite precise enough, consistent enough, or explicit enough to drive implementation without follow-up questions.
@@ -46,7 +49,7 @@ The current implementation already covers a fair amount of the workflow:
 - convergence detection from text snapshots rather than prompt-string matching
 - repeated-state detection to stop obvious oscillation
 - `strict`, `ripple`, and `sweep` execution modes
-- multi-agent execution via Copilot, Codex, Claude, or a custom command
+- multi-agent execution via Copilot, Codex, Claude, Gemini, or a custom command
 - optional goal injection for targeted runs
 - optional reasoning-effort passthrough for agents that support it
 - configurable per-iteration timeout, including disabled timeout for long runs
@@ -134,49 +137,94 @@ Without that, the safest thing for the agent to do is stay generic or refuse to 
 
 ## Requirements
 
-- Python 3
 - an AI coding agent CLI installed locally
 - markdown docs in the target repository
+
+If you are building from source instead of using a release binary, you also need:
+
+- Rust stable
 
 Tested agent CLIs:
 
 - GitHub Copilot CLI
 - OpenAI Codex CLI
 - Claude Code CLI
+- Gemini CLI
 - arbitrary custom commands via `--agent-cmd`
 
 Git is strongly recommended, but not strictly required if you run with `--no-commit --allow-dirty`.
+
+## Installation
+
+From source:
+
+```bash
+cargo install --path .
+```
+
+Without installing globally:
+
+```bash
+cargo build --release
+./target/release/autospec --version
+```
+
+Tagged releases are intended to publish:
+
+- GitHub release archives
+- a Homebrew formula in `localtaskrepo/homebrew-lotar`
+- a Scoop manifest in `localtaskrepo/scoop-lotar`
+
+## Git hooks
+
+This repo includes optional git hooks under `.githooks/` to catch formatting and clippy issues before they reach CI.
+
+Enable them once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The pre-commit hook auto-runs `cargo fmt --all` on staged Rust files while preserving partial staging.
+The pre-push hook runs the main Rust validation checks used by CI:
+
+- `cargo fmt --all --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test --all-targets`
+- `cargo build --profile ci`
+
+See `.githooks/SETUP.md` for the full behavior and bypass options.
 
 ## Quick start
 
 Single doc:
 
 ```bash
-python autospec/run.py docs/product.md
+autospec docs/product.md
 ```
 
 Single doc, no commits:
 
 ```bash
-python autospec/run.py --no-commit docs/product.md
+autospec --no-commit docs/product.md
 ```
 
 Folder sweep:
 
 ```bash
-python autospec/run.py --scope sweep docs/ui
+autospec --scope sweep docs/ui
 ```
 
 Repo-wide ripple from a canonical doc:
 
 ```bash
-python autospec/run.py --scope ripple docs/entity-dictionary.md
+autospec --scope ripple docs/entity-dictionary.md
 ```
 
 Disable per-iteration timeout for large runs:
 
 ```bash
-python autospec/run.py --scope sweep --agent-timeout 0 docs/ui
+autospec --scope sweep --agent-timeout 0 docs/ui
 ```
 
 ## Important flags
@@ -186,7 +234,7 @@ python autospec/run.py --scope sweep --agent-timeout 0 docs/ui
 - `--max-iters N`
 - `--threshold N`
 - `--stable-iters N`
-- `--agent copilot|codex|claude|custom`
+- `--agent copilot|codex|claude|gemini|custom`
 - `--agent-timeout N` with `0` meaning disabled
 - `--no-commit`
 - `--no-branch`
@@ -200,7 +248,7 @@ The default prompt is biased toward the repository that created it. That is not 
 
 The highest leverage tuning points are:
 
-1. `autospec/prompt.md`
+1. `templates/default_prompt.md`
    Add the language your project actually uses. Name the canonical docs that own cross-cutting rules. Make the agent's idea of a good spec match your repo.
 
 2. Scope choice
@@ -227,8 +275,8 @@ The highest leverage tuning points are:
 
 autospec writes:
 
-- per-iteration logs in `autospec/logs/`
-- run summaries in `autospec/results.tsv`
+- per-iteration logs in `.autospec/logs/`
+- run summaries in `.autospec/results.tsv`
 
 These are worth reading. The change pattern across iterations usually tells you more than the final status line.
 

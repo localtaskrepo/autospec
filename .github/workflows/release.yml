@@ -1,0 +1,544 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  require-qa-green:
+    name: Ensure QA succeeded
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Verify latest QA run for this commit is green
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const response = await github.rest.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id: 'ci.yml',
+              head_sha: context.sha,
+              status: 'completed',
+            });
+
+            const success = response.data.workflow_runs.find((run) => run.conclusion === 'success');
+            if (!success) {
+              core.setFailed('No successful Quality Assurance workflow run found for this commit.');
+            }
+
+  create-release:
+    name: Create Release
+    needs: require-qa-green
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag matches Cargo.toml version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          tag_base="${tag%%-*}"
+          if [ -z "$tag_base" ]; then
+            tag_base="$tag"
+          fi
+          cargo_version=$(grep -E '^version\s*=\s*"' Cargo.toml | head -n1 | sed -E 's/.*version\s*=\s*"([^"]+)".*/\1/')
+          echo "Tag: $tag | Base: $tag_base | Cargo.toml: $cargo_version"
+          if [ "$tag_base" != "$cargo_version" ]; then
+            echo "Error: tag base ($tag_base) does not match Cargo.toml version ($cargo_version)." >&2
+            exit 1
+          fi
+
+      - name: Create release if needed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists"
+          else
+            gh release create "$tag" \
+              --title "$tag" \
+              --generate-notes
+          fi
+
+  build-and-release:
+    name: Build and Release
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            rust_target: aarch64-apple-darwin
+            artifact: macos-arm64
+            bin: autospec
+          - os: macos-latest
+            rust_target: x86_64-apple-darwin
+            artifact: macos-x64
+            bin: autospec
+          - os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            artifact: linux-x64
+            bin: autospec
+          - os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-musl
+            artifact: linux-musl-x64
+            bin: autospec
+          - os: ubuntu-latest
+            rust_target: aarch64-unknown-linux-musl
+            artifact: linux-musl-arm64
+            bin: autospec
+          - os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            artifact: windows-x64
+            bin: autospec.exe
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: release-${{ matrix.os }}-${{ matrix.rust_target }}
+
+      - name: Install musl toolchain
+        if: startsWith(matrix.rust_target, 'x86_64-unknown-linux-musl')
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Install Rust target
+        shell: bash
+        run: rustup target add "${{ matrix.rust_target }}"
+
+      - name: Install cross
+        if: matrix.rust_target == 'aarch64-unknown-linux-musl'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v cross >/dev/null 2>&1; then
+            cargo install cross --git https://github.com/cross-rs/cross --tag v0.2.5 --locked
+          fi
+
+      - name: Build (release via cross)
+        if: matrix.rust_target == 'aarch64-unknown-linux-musl'
+        shell: bash
+        run: cross build --release --locked --target "${{ matrix.rust_target }}"
+
+      - name: Build (release)
+        if: matrix.rust_target != 'aarch64-unknown-linux-musl'
+        shell: bash
+        run: cargo build --release --locked --target "${{ matrix.rust_target }}"
+
+      - name: Strip binary (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin_path="target/${{ matrix.rust_target }}/release/${{ matrix.bin }}"
+          if [[ "${{ matrix.rust_target }}" == aarch64-* ]]; then
+            echo "Skipping strip for cross-compiled target"
+            exit 0
+          fi
+          if command -v strip >/dev/null 2>&1; then
+            strip "$bin_path" || true
+          fi
+
+      - name: Package artifact (non-Windows)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          name="autospec-${{ github.ref_name }}-${{ matrix.artifact }}"
+          bin_path="target/${{ matrix.rust_target }}/release/${{ matrix.bin }}"
+          cp "$bin_path" "dist/${{ matrix.bin }}"
+          tar -czf "$name.tar.gz" -C dist "${{ matrix.bin }}"
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "$name.tar.gz" > "$name.sha256"
+          elif command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$name.tar.gz" > "$name.sha256"
+          else
+            echo "WARN: no checksum tool; creating empty checksum file" >&2
+            : > "$name.sha256"
+          fi
+
+      - name: Package artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -Path dist -ItemType Directory -Force | Out-Null
+          $name = "autospec-${{ github.ref_name }}-${{ matrix.artifact }}"
+          $binPath = "target/${{ matrix.rust_target }}/release/${{ matrix.bin }}"
+          Copy-Item $binPath "dist/${{ matrix.bin }}"
+          Compress-Archive -Path "dist/${{ matrix.bin }}" -DestinationPath "$name.zip"
+          $hash = (Get-FileHash -Path "$name.zip" -Algorithm SHA256).Hash
+          "$hash  $name.zip" | Out-File -FilePath "$name.sha256" -Encoding ascii
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign artifact (non-Windows)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          COSIGN_EXPERIMENTAL: 1
+        run: |
+          set -euo pipefail
+          name="autospec-${{ github.ref_name }}-${{ matrix.artifact }}"
+          cosign sign-blob --yes \
+            --output-signature "$name.tar.gz.sig" \
+            --output-certificate "$name.tar.gz.pem" \
+            "$name.tar.gz"
+
+      - name: Sign artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          COSIGN_EXPERIMENTAL: 1
+        run: |
+          $name = "autospec-${{ github.ref_name }}-${{ matrix.artifact }}"
+          cosign sign-blob --yes --output-signature "$name.zip.sig" --output-certificate "$name.zip.pem" "$name.zip"
+
+      - name: Upload release assets (tar.gz)
+        if: runner.os != 'Windows'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "${GITHUB_REF_NAME}" \
+            "autospec-${GITHUB_REF_NAME}-${{ matrix.artifact }}.tar.gz" \
+            "autospec-${GITHUB_REF_NAME}-${{ matrix.artifact }}.tar.gz.pem" \
+            "autospec-${GITHUB_REF_NAME}-${{ matrix.artifact }}.tar.gz.sig" \
+            "autospec-${GITHUB_REF_NAME}-${{ matrix.artifact }}.sha256" \
+            --clobber
+
+      - name: Upload release assets (zip)
+        if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          gh release upload "${env:GITHUB_REF_NAME}" `
+            "autospec-${env:GITHUB_REF_NAME}-${{ matrix.artifact }}.zip" `
+            "autospec-${env:GITHUB_REF_NAME}-${{ matrix.artifact }}.zip.pem" `
+            "autospec-${env:GITHUB_REF_NAME}-${{ matrix.artifact }}.zip.sig" `
+            "autospec-${env:GITHUB_REF_NAME}-${{ matrix.artifact }}.sha256" `
+            --clobber
+
+  update-release-page:
+    name: Update Release Page
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Add quick download links and commit list
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const tag = process.env.GITHUB_REF_NAME;
+            const release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+
+            const versionTagRegex = /^v\d+\.\d+\.\d+(?:[-+].+)?$/;
+            const tags = await github.paginate(github.rest.repos.listTags, {
+              owner,
+              repo,
+              per_page: 100,
+            });
+
+            const currentIndex = tags.findIndex((t) => t.name === tag);
+            const previousTag =
+              currentIndex >= 0
+                ? tags.slice(currentIndex + 1).map((t) => t.name).find((name) => versionTagRegex.test(name))
+                : tags.map((t) => t.name).find((name) => versionTagRegex.test(name) && name !== tag);
+
+            let commitsSectionBody = '_No previous tag found to compare against._';
+            if (previousTag) {
+              const comparison = await github.rest.repos.compareCommits({
+                owner,
+                repo,
+                base: previousTag,
+                head: tag,
+              });
+
+              const commits = comparison.data.commits ?? [];
+              const maxCommits = 100;
+              const subjects = commits
+                .slice(0, maxCommits)
+                .map((c) => (c.commit?.message ?? '').split('\n')[0].trim() || '(no message)')
+                .sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }));
+              const lines = subjects.map((s) => `- ${s}`);
+              const remaining = Math.max(0, commits.length - maxCommits);
+              if (remaining > 0) {
+                lines.push(`- …and ${remaining} more`);
+              }
+              commitsSectionBody = lines.length ? lines.join('\n') : '_No commits found in this range._';
+            }
+
+            const assetBase = `https://github.com/${owner}/${repo}/releases/download/${tag}`;
+            const quickLinks = [
+              { label: 'macOS (Apple Silicon)', file: `autospec-${tag}-macos-arm64.tar.gz` },
+              { label: 'macOS (Intel)', file: `autospec-${tag}-macos-x64.tar.gz` },
+              { label: 'Linux (glibc x64)', file: `autospec-${tag}-linux-x64.tar.gz` },
+              { label: 'Linux (musl x64)', file: `autospec-${tag}-linux-musl-x64.tar.gz` },
+              { label: 'Linux (musl arm64)', file: `autospec-${tag}-linux-musl-arm64.tar.gz` },
+              { label: 'Windows (x64)', file: `autospec-${tag}-windows-x64.zip` },
+            ];
+            const lines = quickLinks.map((entry) => `- [${entry.label}](${assetBase}/${entry.file})`);
+            const markerStart = '<!-- QUICK-LINKS:START -->';
+            const markerEnd = '<!-- QUICK-LINKS:END -->';
+            const quickLinksSection = [
+              markerStart,
+              '## Download Quick Links',
+              ...lines,
+              '',
+              '> Need checksums or signatures? Scroll down to the Assets list.',
+              markerEnd,
+            ].join('\n');
+
+            const commitsMarkerStart = '<!-- COMMITS:START -->';
+            const commitsMarkerEnd = '<!-- COMMITS:END -->';
+            const commitsSection = [
+              commitsMarkerStart,
+              'Changes:',
+              commitsSectionBody,
+              commitsMarkerEnd,
+            ].join('\n');
+
+            const existingBody = release.data.body ?? '';
+            const quickRegex = new RegExp(`${markerStart}[\\s\\S]*?${markerEnd}`);
+            const withQuickLinks = quickRegex.test(existingBody)
+              ? existingBody.replace(quickRegex, quickLinksSection)
+              : `${quickLinksSection}\n\n${existingBody}`.trim();
+
+            const commitsRegex = new RegExp(`${commitsMarkerStart}[\\s\\S]*?${commitsMarkerEnd}`);
+            const nextBody = commitsRegex.test(withQuickLinks)
+              ? withQuickLinks.replace(commitsRegex, commitsSection)
+              : `${commitsSection}\n\n${withQuickLinks}`.trim();
+
+            await github.rest.repos.updateRelease({
+              owner,
+              repo,
+              release_id: release.data.id,
+              body: nextBody,
+            });
+
+  update-homebrew-tap:
+    name: Update Homebrew Tap
+    needs: update-release-page
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout tap repository
+        uses: actions/checkout@v5
+        with:
+          repository: localtaskrepo/homebrew-lotar
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Collect release metadata
+        id: release_meta
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          asset_base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
+          {
+            echo "tag=${tag}"
+            echo "version=${version}"
+            echo "asset_base=${asset_base}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download macOS checksums
+        shell: bash
+        run: |
+          cd tap
+          base="${{ steps.release_meta.outputs.asset_base }}"
+          tag="${{ steps.release_meta.outputs.tag }}"
+          curl -sSfL "${base}/autospec-${tag}-macos-arm64.sha256" -o arm64.sha
+          curl -sSfL "${base}/autospec-${tag}-macos-x64.sha256" -o x64.sha
+
+      - name: Update formula
+        shell: bash
+        env:
+          VERSION: ${{ steps.release_meta.outputs.version }}
+          BASE_URL: ${{ steps.release_meta.outputs.asset_base }}
+        run: |
+          cd tap
+          arm64_sha=$(cut -d ' ' -f1 arm64.sha)
+          x64_sha=$(cut -d ' ' -f1 x64.sha)
+          export ARM64_SHA="$arm64_sha"
+          export X64_SHA="$x64_sha"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          version = os.environ['VERSION']
+          base = os.environ['BASE_URL']
+          arm_sha = os.environ['ARM64_SHA']
+          x64_sha = os.environ['X64_SHA']
+
+          formula = f"""class Autospec < Formula
+            desc \"Converge markdown specs with local AI coding agent CLIs\"
+            homepage \"https://github.com/localtaskrepo/autospec\"
+            version \"{version}\"
+            license \"MIT\"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url \"{base}/autospec-v{version}-macos-arm64.tar.gz\"
+                sha256 \"{arm_sha}\"
+              else
+                url \"{base}/autospec-v{version}-macos-x64.tar.gz\"
+                sha256 \"{x64_sha}\"
+              end
+            end
+
+            def install
+              bin.install \"autospec\"
+            end
+
+            test do
+              assert_match \"autospec\", shell_output("#{'{'}bin{'}'}/autospec --version")
+            end
+          end
+          """
+
+          Path("Formula/autospec.rb").write_text(formula)
+          PY
+
+      - name: Commit and push tap update
+        shell: bash
+        env:
+          VERSION: ${{ steps.release_meta.outputs.version }}
+        run: |
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/autospec.rb
+          git commit -m "Update autospec formula to v${VERSION}" || echo "No changes"
+          git push
+
+  update-scoop-bucket:
+    name: Update Scoop Bucket
+    needs: update-release-page
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout scoop bucket repository
+        uses: actions/checkout@v5
+        with:
+          repository: localtaskrepo/scoop-lotar
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: scoop-bucket
+
+      - name: Collect release metadata
+        id: scoop_meta
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          asset_base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
+          {
+            echo "tag=${tag}"
+            echo "version=${version}"
+            echo "asset_base=${asset_base}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download Windows checksum
+        shell: bash
+        env:
+          ASSET_BASE: ${{ steps.scoop_meta.outputs.asset_base }}
+          TAG: ${{ steps.scoop_meta.outputs.tag }}
+        run: |
+          cd scoop-bucket
+          curl -sSfL "${ASSET_BASE}/autospec-${TAG}-windows-x64.sha256" -o windows.sha
+
+      - name: Update manifest
+        shell: bash
+        env:
+          VERSION: ${{ steps.scoop_meta.outputs.version }}
+          BASE_URL: ${{ steps.scoop_meta.outputs.asset_base }}
+          TAG: ${{ steps.scoop_meta.outputs.tag }}
+        run: |
+          cd scoop-bucket
+          mkdir -p bucket
+          hash=$(cut -d ' ' -f1 windows.sha)
+          export HASH="$hash"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          version = os.environ['VERSION']
+          base = os.environ['BASE_URL']
+          tag = os.environ['TAG']
+          hash_value = os.environ['HASH']
+
+          manifest = {
+              "version": version,
+              "description": "Converge markdown specs with local AI coding agent CLIs",
+              "homepage": "https://github.com/localtaskrepo/autospec",
+              "license": "MIT",
+              "architecture": {
+                  "64bit": {
+                      "url": f"{base}/autospec-{tag}-windows-x64.zip",
+                      "hash": hash_value,
+                  }
+              },
+              "bin": "autospec.exe",
+              "checkver": "github",
+              "autoupdate": {
+                  "architecture": {
+                      "64bit": {
+                          "url": "https://github.com/localtaskrepo/autospec/releases/download/v$version/autospec-v$version-windows-x64.zip",
+                      }
+                  }
+              },
+          }
+
+          Path("bucket/autospec.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          PY
+
+      - name: Commit and push bucket update
+        shell: bash
+        env:
+          VERSION: ${{ steps.scoop_meta.outputs.version }}
+        run: |
+          cd scoop-bucket
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bucket/autospec.json
+          git commit -m "Update autospec manifest to v${VERSION}" || echo "No changes"
+          git push
