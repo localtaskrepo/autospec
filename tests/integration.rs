@@ -167,3 +167,96 @@ fn sweep_mode_tracks_multiple_files() {
     assert!(one.contains("fake-agent: sweep one.md"));
     assert!(two.contains("fake-agent: sweep two.md"));
 }
+
+#[test]
+fn no_artifacts_keeps_repo_clean() {
+    let temp = tempdir().unwrap();
+    let docs_dir = temp.path().join("docs");
+    copy_fixture(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/docs-basic"),
+        &docs_dir,
+    );
+
+    let template = format!(
+        "python3 {} --mode no-op --prompt {{prompt}} --cwd {{cwd}} --log {{log}}",
+        fake_agent_path().display()
+    );
+
+    Command::cargo_bin("autospec")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "docs/product.md",
+            "--agent",
+            "custom",
+            "--agent-cmd",
+            &template,
+            "--no-commit",
+            "--allow-dirty",
+            "--no-artifacts",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Results:       (disabled via --no-artifacts)",
+        ));
+
+    assert!(!temp.path().join(".autospec").exists());
+}
+
+#[test]
+fn empty_results_file_is_reinitialized_before_append() {
+    let temp = tempdir().unwrap();
+    let docs_dir = temp.path().join("docs");
+    copy_fixture(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/docs-basic"),
+        &docs_dir,
+    );
+
+    let autospec_dir = temp.path().join(".autospec");
+    fs::create_dir_all(&autospec_dir).unwrap();
+    fs::write(autospec_dir.join("results.tsv"), "").unwrap();
+
+    let template = format!(
+        "python3 {} --mode no-op --prompt {{prompt}} --cwd {{cwd}} --log {{log}}",
+        fake_agent_path().display()
+    );
+
+    Command::cargo_bin("autospec")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "docs/product.md",
+            "--agent",
+            "custom",
+            "--agent-cmd",
+            &template,
+            "--no-commit",
+            "--allow-dirty",
+        ])
+        .assert()
+        .success();
+
+    let results = fs::read_to_string(autospec_dir.join("results.tsv")).unwrap();
+    assert!(results.starts_with("doc\titerations\tstatus\tdelta\ttimestamp\n"));
+    assert!(results.contains("docs/product.md\t1\tconverged"));
+}
+
+#[test]
+fn help_output_describes_key_flags() {
+    Command::cargo_bin("autospec")
+        .unwrap()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Run an AI coding agent in a convergence loop against markdown docs.",
+        ))
+        .stdout(predicate::str::contains("--scope <SCOPE>"))
+        .stdout(predicate::str::contains("strict edits only the target doc"))
+        .stdout(predicate::str::contains("--no-artifacts"))
+        .stdout(predicate::str::contains(
+            "Do not write repo-local .autospec artifacts",
+        ))
+        .stdout(predicate::str::contains("Environment overrides:"));
+}

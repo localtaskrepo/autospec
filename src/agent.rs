@@ -9,6 +9,13 @@ use wait_timeout::ChildExt;
 use crate::config::{AgentRequest, BuiltInAgent, RuntimeConfig};
 use crate::error::{AutospecError, Result};
 
+const BUILTIN_AGENTS: [BuiltInAgent; 4] = [
+    BuiltInAgent::Copilot,
+    BuiltInAgent::Claude,
+    BuiltInAgent::Codex,
+    BuiltInAgent::Gemini,
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentAvailability {
     pub kind: BuiltInAgent,
@@ -73,12 +80,7 @@ where
             .ok_or(AutospecError::MissingBuiltInAgent(kind.executable_name()));
     }
 
-    for kind in [
-        BuiltInAgent::Copilot,
-        BuiltInAgent::Claude,
-        BuiltInAgent::Codex,
-        BuiltInAgent::Gemini,
-    ] {
+    for kind in BUILTIN_AGENTS {
         if let Some(path) = locator(kind.executable_name()) {
             return Ok((kind, path));
         }
@@ -88,18 +90,13 @@ where
 }
 
 pub fn list_builtin_availability() -> Vec<AgentAvailability> {
-    [
-        BuiltInAgent::Copilot,
-        BuiltInAgent::Claude,
-        BuiltInAgent::Codex,
-        BuiltInAgent::Gemini,
-    ]
-    .into_iter()
-    .map(|kind| AgentAvailability {
-        kind,
-        executable: find_executable(kind.executable_name()),
-    })
-    .collect()
+    BUILTIN_AGENTS
+        .into_iter()
+        .map(|kind| AgentAvailability {
+            kind,
+            executable: find_executable(kind.executable_name()),
+        })
+        .collect()
 }
 
 fn find_executable(name: &str) -> Option<PathBuf> {
@@ -171,6 +168,8 @@ pub fn run_agent(agent: &ResolvedAgent, request: &AgentRunRequest) -> Result<Age
         );
         return Ok(AgentRunResult::Completed);
     }
+
+    ensure_log_parent_dir(&request.log_path)?;
 
     let prepared = prepare_command(agent, request)?;
     let command_name = prepared.program.to_string_lossy().into_owned();
@@ -373,15 +372,44 @@ fn prepare_custom_command(template: &str, request: &AgentRunRequest) -> Result<P
 }
 
 fn maybe_write_log(
-    log_path: &PathBuf,
+    log_path: &Path,
     stdout: &[u8],
     stderr: &[u8],
     agent_writes_log: bool,
 ) -> Result<()> {
-    if agent_writes_log && log_path.exists() {
+    if agent_writes_log && log_has_content(log_path) {
         return Ok(());
     }
 
+    let content = combined_output(stdout, stderr);
+
+    if content.is_empty() {
+        if log_path.exists() && !log_has_content(log_path) {
+            let _ = fs::remove_file(log_path);
+        }
+        return Ok(());
+    }
+
+    fs::write(log_path, content)
+        .map_err(|source| AutospecError::io("writing agent log", log_path, source))
+}
+
+fn ensure_log_parent_dir(log_path: &Path) -> Result<()> {
+    let Some(parent) = log_path.parent() else {
+        return Ok(());
+    };
+
+    fs::create_dir_all(parent)
+        .map_err(|source| AutospecError::io("creating agent log directory", parent, source))
+}
+
+fn log_has_content(log_path: &Path) -> bool {
+    fs::metadata(log_path)
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false)
+}
+
+fn combined_output(stdout: &[u8], stderr: &[u8]) -> String {
     let mut content = String::new();
     if !stdout.is_empty() {
         content.push_str(&String::from_utf8_lossy(stdout));
@@ -392,9 +420,7 @@ fn maybe_write_log(
         }
         content.push_str(&String::from_utf8_lossy(stderr));
     }
-
-    fs::write(log_path, content)
-        .map_err(|source| AutospecError::io("writing agent log", log_path, source))
+    content
 }
 
 fn print_tail(stdout: &[u8], stderr: &[u8]) {
@@ -418,6 +444,7 @@ fn print_tail(stdout: &[u8], stderr: &[u8]) {
 mod tests {
     use super::*;
     use crate::config::BuiltInAgent;
+    use tempfile::tempdir;
 
     #[test]
     fn auto_selects_priority_order() {
@@ -439,5 +466,16 @@ mod tests {
             error,
             AutospecError::MissingBuiltInAgent("gemini")
         ));
+    }
+
+    #[test]
+    fn falls_back_to_captured_output_when_agent_log_is_empty() {
+        let temp = tempdir().unwrap();
+        let log_path = temp.path().join("agent.log");
+        fs::write(&log_path, "").unwrap();
+
+        maybe_write_log(&log_path, b"stdout line\n", b"", true).unwrap();
+
+        assert_eq!(fs::read_to_string(&log_path).unwrap(), "stdout line\n");
     }
 }

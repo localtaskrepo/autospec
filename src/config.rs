@@ -84,65 +84,71 @@ pub struct RuntimeConfig {
     pub no_commit: bool,
     pub no_branch: bool,
     pub dry_run: bool,
+    pub no_artifacts: bool,
     pub max_scope_files: Option<usize>,
 }
 
 impl RuntimeConfig {
     pub fn from_cli(cli: CliArgs) -> Result<Self> {
+        let CliArgs {
+            target,
+            agent,
+            agent_cmd,
+            model,
+            effort,
+            agent_timeout,
+            max_iters,
+            threshold,
+            stable_iters,
+            scope,
+            max_scope_files,
+            goal,
+            doc_dir,
+            skip_readmes,
+            allow_dirty,
+            no_commit,
+            no_branch,
+            dry_run,
+            no_artifacts,
+        } = cli;
+
         let repo_root = env::current_dir()
             .map_err(|source| AutospecError::io("reading current directory", ".", source))?;
         let repo_root = repo_root.canonicalize().map_err(|source| {
             AutospecError::io("canonicalizing current directory", &repo_root, source)
         })?;
 
-        let scope = if let Some(scope) = cli.scope {
-            scope.into()
-        } else if let Some(scope) = read_env_scope("SCOPE")? {
-            scope
-        } else {
-            ScopeMode::Strict
-        };
-
-        let target_input = if let Some(target) = cli.target {
-            target
-        } else if let Some(doc_dir) = cli.doc_dir {
-            doc_dir
-        } else if let Some(doc_dir) = read_env_path("DOC_DIR")? {
-            doc_dir
-        } else {
-            PathBuf::from("docs")
-        };
+        let scope = resolve_scope(scope)?;
+        let target_input = target
+            .or(doc_dir)
+            .or_else(|| read_env_path("DOC_DIR"))
+            .unwrap_or_else(|| PathBuf::from("docs"));
 
         let target = resolve_target(&repo_root, &target_input)?;
 
-        let model = resolve_string(cli.model, "MODEL", "gpt-5.4")?;
-        let effort = resolve_string(cli.effort, "EFFORT", "")?;
-        let goal = resolve_string(cli.goal, "GOAL", "")?;
-        let max_iters = resolve_u32(cli.max_iters, "MAX_ITERS", 10, 1)?;
-        let threshold = resolve_usize(cli.threshold, "THRESHOLD", 10, 0)?;
-        let stable_iters = resolve_u32(cli.stable_iters, "STABLE_ITERS", 2, 1)?;
-        let max_scope_files = resolve_optional_usize(cli.max_scope_files, "MAX_SCOPE_FILES")?;
+        let model = resolve_string(model, "MODEL", "gpt-5.4");
+        let effort = resolve_string(effort, "EFFORT", "");
+        let goal = resolve_string(goal, "GOAL", "");
+        let max_iters = resolve_u32(max_iters, "MAX_ITERS", 10, 1)?;
+        let threshold = resolve_usize(threshold, "THRESHOLD", 10, 0)?;
+        let stable_iters = resolve_u32(stable_iters, "STABLE_ITERS", 2, 1)?;
+        let max_scope_files = resolve_optional_usize(max_scope_files, "MAX_SCOPE_FILES")?;
         let max_scope_files = max_scope_files.filter(|value| *value > 0);
-        let agent_timeout = resolve_optional_u64(cli.agent_timeout, "AGENT_TIMEOUT")?
+        let agent_timeout = resolve_optional_u64(agent_timeout, "AGENT_TIMEOUT")?
             .map(Duration::from_secs)
             .filter(|duration| !duration.is_zero());
 
-        let skip_readmes = cli.skip_readmes || read_env_flag("SKIP_READMES");
-        let allow_dirty = cli.allow_dirty || read_env_flag("ALLOW_DIRTY");
-        let no_commit = cli.no_commit || read_env_flag("NO_COMMIT");
-        let no_branch = cli.no_branch || read_env_flag("NO_BRANCH");
-        let dry_run = cli.dry_run || read_env_flag("DRY_RUN");
+        let skip_readmes = resolve_flag(skip_readmes, "SKIP_READMES");
+        let allow_dirty = resolve_flag(allow_dirty, "ALLOW_DIRTY");
+        let no_commit = resolve_flag(no_commit, "NO_COMMIT");
+        let no_branch = resolve_flag(no_branch, "NO_BRANCH");
+        let dry_run = resolve_flag(dry_run, "DRY_RUN");
+        let no_artifacts = resolve_flag(no_artifacts, "NO_ARTIFACTS");
 
-        let agent_request = if let Some(agent) = cli.agent {
-            parse_agent_arg(agent)
-        } else if let Some(agent) = read_env_agent("AGENT")? {
-            agent
-        } else {
-            AgentRequest::Auto
-        };
+        let agent_request = resolve_agent_request(agent)?;
 
         let agent_cmd_template = if matches!(agent_request, AgentRequest::Custom) {
-            cli.agent_cmd
+            agent_cmd
                 .or_else(|| env::var("AGENT_CMD").ok())
                 .filter(|value| !value.trim().is_empty())
         } else {
@@ -173,8 +179,29 @@ impl RuntimeConfig {
             no_commit,
             no_branch,
             dry_run,
+            no_artifacts,
             max_scope_files,
         })
+    }
+}
+
+fn resolve_scope(cli_scope: Option<ScopeArg>) -> Result<ScopeMode> {
+    if let Some(scope) = cli_scope {
+        Ok(scope.into())
+    } else if let Some(scope) = read_env_scope("SCOPE")? {
+        Ok(scope)
+    } else {
+        Ok(ScopeMode::Strict)
+    }
+}
+
+fn resolve_agent_request(cli_agent: Option<AgentArg>) -> Result<AgentRequest> {
+    if let Some(agent) = cli_agent {
+        Ok(parse_agent_arg(agent))
+    } else if let Some(agent) = read_env_agent("AGENT")? {
+        Ok(agent)
+    } else {
+        Ok(AgentRequest::Auto)
     }
 }
 
@@ -193,7 +220,11 @@ fn read_env_agent(name: &str) -> Result<Option<AgentRequest>> {
         return Ok(None);
     };
 
-    let request = match raw.as_str() {
+    parse_agent_request_value(&raw, name).map(Some)
+}
+
+fn parse_agent_request_value(raw: &str, source_name: &str) -> Result<AgentRequest> {
+    let request = match raw {
         "copilot" => AgentRequest::BuiltIn(BuiltInAgent::Copilot),
         "claude" => AgentRequest::BuiltIn(BuiltInAgent::Claude),
         "codex" => AgentRequest::BuiltIn(BuiltInAgent::Codex),
@@ -201,12 +232,12 @@ fn read_env_agent(name: &str) -> Result<Option<AgentRequest>> {
         "custom" => AgentRequest::Custom,
         _ => {
             return Err(AutospecError::InvalidConfig(format!(
-                "{name} must be one of copilot|claude|codex|gemini|custom"
+                "{source_name} must be one of copilot|claude|codex|gemini|custom"
             )));
         }
     };
 
-    Ok(Some(request))
+    Ok(request)
 }
 
 fn read_env_scope(name: &str) -> Result<Option<ScopeMode>> {
@@ -214,32 +245,39 @@ fn read_env_scope(name: &str) -> Result<Option<ScopeMode>> {
         return Ok(None);
     };
 
-    let scope = match raw.as_str() {
+    parse_scope_value(&raw, name).map(Some)
+}
+
+fn parse_scope_value(raw: &str, source_name: &str) -> Result<ScopeMode> {
+    let scope = match raw {
         "strict" => ScopeMode::Strict,
         "ripple" => ScopeMode::Ripple,
         "sweep" => ScopeMode::Sweep,
         _ => {
             return Err(AutospecError::InvalidConfig(format!(
-                "{name} must be one of strict|ripple|sweep"
+                "{source_name} must be one of strict|ripple|sweep"
             )));
         }
     };
 
-    Ok(Some(scope))
+    Ok(scope)
 }
 
 fn read_env_flag(name: &str) -> bool {
     matches!(env::var(name).ok().as_deref(), Some("1"))
 }
 
-fn read_env_path(name: &str) -> Result<Option<PathBuf>> {
-    Ok(env::var(name).ok().map(PathBuf::from))
+fn resolve_flag(cli_value: bool, env_name: &str) -> bool {
+    cli_value || read_env_flag(env_name)
 }
 
-fn resolve_string(cli: Option<String>, env_name: &str, default: &str) -> Result<String> {
-    Ok(cli
-        .or_else(|| env::var(env_name).ok())
-        .unwrap_or_else(|| default.to_owned()))
+fn read_env_path(name: &str) -> Option<PathBuf> {
+    env::var(name).ok().map(PathBuf::from)
+}
+
+fn resolve_string(cli: Option<String>, env_name: &str, default: &str) -> String {
+    cli.or_else(|| env::var(env_name).ok())
+        .unwrap_or_else(|| default.to_owned())
 }
 
 fn resolve_u32(cli: Option<u32>, env_name: &str, default: u32, min: u32) -> Result<u32> {
@@ -341,5 +379,43 @@ impl From<ScopeArg> for ScopeMode {
             ScopeArg::Ripple => ScopeMode::Ripple,
             ScopeArg::Sweep => ScopeMode::Sweep,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_agent_request_value_accepts_custom() {
+        let parsed = parse_agent_request_value("custom", "AGENT").unwrap();
+        assert_eq!(parsed, AgentRequest::Custom);
+    }
+
+    #[test]
+    fn parse_agent_request_value_rejects_unknown_values() {
+        let error = parse_agent_request_value("invalid", "AGENT").unwrap_err();
+        assert!(
+            matches!(error, AutospecError::InvalidConfig(message) if message == "AGENT must be one of copilot|claude|codex|gemini|custom")
+        );
+    }
+
+    #[test]
+    fn parse_scope_value_accepts_ripple() {
+        let parsed = parse_scope_value("ripple", "SCOPE").unwrap();
+        assert_eq!(parsed, ScopeMode::Ripple);
+    }
+
+    #[test]
+    fn parse_scope_value_rejects_unknown_values() {
+        let error = parse_scope_value("invalid", "SCOPE").unwrap_err();
+        assert!(
+            matches!(error, AutospecError::InvalidConfig(message) if message == "SCOPE must be one of strict|ripple|sweep")
+        );
+    }
+
+    #[test]
+    fn resolve_flag_prefers_cli_true() {
+        assert!(resolve_flag(true, "UNUSED_ENV_FLAG"));
     }
 }

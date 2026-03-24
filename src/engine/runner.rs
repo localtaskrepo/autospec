@@ -28,7 +28,7 @@ pub(super) struct ConvergenceRunner<'a> {
     outputs: &'a OutputPaths,
     plan: &'a RunPlan,
     agent_executor: AgentExecutor,
-    run_log: PathBuf,
+    run_log: Option<PathBuf>,
     low_delta_streak: u32,
     last_delta: String,
     last_changed_files: usize,
@@ -54,7 +54,7 @@ impl<'a> ConvergenceRunner<'a> {
         plan: &'a RunPlan,
         agent_executor: AgentExecutor,
     ) -> Result<Self> {
-        let run_log = reset_run_logs(&outputs.log_dir, &plan.slug)?;
+        let run_log = reset_run_logs(outputs.log_dir(), &plan.slug)?;
         let initial_snapshot = snapshot_scope(&config.repo_root, &plan.tracked_files)?;
 
         Ok(Self {
@@ -84,7 +84,7 @@ impl<'a> ConvergenceRunner<'a> {
             self.config.max_iters
         );
         append_result(
-            &self.outputs.results_file,
+            self.outputs.results_file(),
             &self.plan.results_key,
             self.config.max_iters,
             "not-converged",
@@ -242,7 +242,7 @@ impl<'a> ConvergenceRunner<'a> {
         delta: &crate::diff::ScopeDelta,
     ) -> Result<()> {
         append_log(
-            &self.run_log,
+            self.run_log.as_deref(),
             &format!(
                 "[{iteration}] changed ({}) files={}",
                 delta.display,
@@ -294,9 +294,9 @@ impl<'a> ConvergenceRunner<'a> {
         delta: &str,
         log_line: impl AsRef<str>,
     ) -> Result<()> {
-        append_log(&self.run_log, log_line.as_ref())?;
+        append_log(self.run_log.as_deref(), log_line.as_ref())?;
         append_result(
-            &self.outputs.results_file,
+            self.outputs.results_file(),
             &self.plan.results_key,
             iteration,
             status,
@@ -329,9 +329,7 @@ pub(super) fn build_agent_request(
                 last_changed_files,
             },
         ),
-        log_path: outputs
-            .log_dir
-            .join(format!("{}_iter{iteration}.md", plan.slug)),
+        log_path: outputs.iteration_log_path(&plan.slug, iteration),
         model: config.model.clone(),
         effort: config.effort.clone(),
         timeout: config.agent_timeout,
@@ -349,7 +347,7 @@ mod tests {
 
     use crate::config::{AgentRequest, ScopeMode};
     use crate::docs::discover_scope;
-    use crate::output::{ensure_output_paths, output_paths};
+    use crate::output::output_paths;
 
     fn no_op_agent(_: &ResolvedAgent, _: &AgentRunRequest) -> Result<AgentRunResult> {
         Ok(AgentRunResult::Completed)
@@ -434,12 +432,12 @@ mod tests {
             no_commit: true,
             no_branch: true,
             dry_run: false,
+            no_artifacts: false,
             max_scope_files: None,
         };
 
         let discovery = discover_scope(&config).unwrap();
-        let outputs = output_paths(&config.repo_root);
-        ensure_output_paths(&outputs).unwrap();
+        let outputs = output_paths(&config.repo_root, config.no_artifacts);
         let plan = RunPlan {
             label: "docs/product.md".to_owned(),
             slug: "docs__product".to_owned(),
@@ -480,7 +478,7 @@ mod tests {
         .unwrap();
 
         assert!(result);
-        let results = fs::read_to_string(outputs.results_file).unwrap();
+        let results = fs::read_to_string(outputs.results_file().unwrap()).unwrap();
         assert!(results.contains("docs/product.md\t1\tconverged"));
     }
 
@@ -502,7 +500,7 @@ mod tests {
         .unwrap();
 
         assert!(!result);
-        let results = fs::read_to_string(outputs.results_file).unwrap();
+        let results = fs::read_to_string(outputs.results_file().unwrap()).unwrap();
         assert!(results.contains("docs/product.md\t2\toscillating"));
     }
 
@@ -524,7 +522,7 @@ mod tests {
         .unwrap();
 
         assert!(result);
-        let results = fs::read_to_string(outputs.results_file).unwrap();
+        let results = fs::read_to_string(outputs.results_file().unwrap()).unwrap();
         assert!(results.contains("docs/product.md\t2\tconverged\t+1/-0"));
     }
 }

@@ -54,6 +54,7 @@ The current implementation already covers a fair amount of the workflow:
 - no-commit mode for experimentation without git writes
 - dirty-doc guardrails with explicit opt-out
 - per-iteration logs and tabular results tracking
+- optional `--no-artifacts` mode to avoid creating a repo-local `.autospec/` directory
 - sparse-seed warnings for repos that are too thin to produce project-specific output reliably
 
 ## Current status
@@ -213,6 +214,12 @@ See `.githooks/SETUP.md` for the full behavior and bypass options.
 
 ## Quick start
 
+See the full CLI reference:
+
+```bash
+autospec --help
+```
+
 Single doc:
 
 ```bash
@@ -223,6 +230,12 @@ Single doc, no commits:
 
 ```bash
 autospec --no-commit docs/product.md
+```
+
+Keep the repo clean and skip `.autospec/` output files:
+
+```bash
+autospec --no-commit --no-artifacts docs/product.md
 ```
 
 Folder sweep:
@@ -255,6 +268,7 @@ autospec --scope sweep --agent-timeout 0 docs/ui
 - `--no-commit`
 - `--no-branch`
 - `--allow-dirty`
+- `--no-artifacts`
 - `--max-scope-files N`
 - `--dry-run`
 

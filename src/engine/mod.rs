@@ -4,7 +4,7 @@ use crate::diff::diff_file;
 use crate::docs::{ScopeDiscovery, discover_scope, repo_relative};
 use crate::error::{AutospecError, Result};
 use crate::git::{create_branch, dirty_docs};
-use crate::output::{OutputPaths, ensure_output_paths, output_paths};
+use crate::output::{OutputPaths, output_paths};
 
 mod runner;
 
@@ -23,15 +23,11 @@ struct RunPlan {
 pub fn run(config: RuntimeConfig) -> Result<()> {
     let discovery = discover_scope(&config)?;
     let agent = resolve_agent(&config)?;
-    let outputs = output_paths(&config.repo_root);
+    let outputs = output_paths(&config.repo_root, config.no_artifacts);
 
     print_header(&config, &discovery, &agent);
     for warning in &discovery.warnings {
         eprintln!("{warning}");
-    }
-
-    if !config.dry_run {
-        ensure_output_paths(&outputs)?;
     }
 
     if !config.dry_run && !config.allow_dirty {
@@ -93,8 +89,11 @@ fn run_sweep(
             "not converged"
         }
     );
-    println!("  Results:       {}", results_path_display(config, outputs));
-    println!("  Logs:          {}/", outputs.log_dir.display());
+    println!(
+        "  Results:       {}",
+        outputs.results_display(config.dry_run)
+    );
+    println!("  Logs:          {}", outputs.logs_display(config.dry_run));
     println!("{}", "═".repeat(51));
     Ok(())
 }
@@ -149,8 +148,11 @@ fn run_docs(
     println!("  Total docs:    {total}");
     println!("  Converged:     {converged}");
     println!("  Not converged: {failed}");
-    println!("  Results:       {}", results_path_display(config, outputs));
-    println!("  Logs:          {}/", outputs.log_dir.display());
+    println!(
+        "  Results:       {}",
+        outputs.results_display(config.dry_run)
+    );
+    println!("  Logs:          {}", outputs.logs_display(config.dry_run));
     println!("{}", "═".repeat(51));
     Ok(())
 }
@@ -184,15 +186,6 @@ fn convergence_loop(
 
     ConvergenceRunner::new(config, agent, discovery, outputs, plan)?.run()
 }
-
-fn results_path_display(config: &RuntimeConfig, outputs: &OutputPaths) -> String {
-    if config.dry_run {
-        "(not written in dry-run)".to_owned()
-    } else {
-        outputs.results_file.display().to_string()
-    }
-}
-
 fn print_header(config: &RuntimeConfig, discovery: &ScopeDiscovery, agent: &ResolvedAgent) {
     println!("autospec - doc convergence loop");
     println!("agent:      {}", agent.display_name());
@@ -231,6 +224,7 @@ fn print_header(config: &RuntimeConfig, discovery: &ScopeDiscovery, agent: &Reso
         );
     }
     println!("commit mode: {}", !config.no_commit);
+    println!("artifacts:  {}", !config.no_artifacts);
     println!("dry run:    {}", config.dry_run);
     let availability = list_builtin_availability()
         .into_iter()
