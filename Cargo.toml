@@ -1,0 +1,57 @@
+[package]
+name = "autospec"
+version = "0.1.0"
+edition = "2024"
+authors = ["Ravi Gairola <mallox@pyxzl.net>"]
+description = "Converge markdown specs with local AI coding agent CLIs"
+license = "MIT"
+repository = "https://github.com/localtaskrepo/autospec"
+homepage = "https://github.com/localtaskrepo/autospec"
+readme = "README.md"
+keywords = ["cli", "documentation", "agents", "specs"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "autospec"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4.42", features = ["clock"], default-features = false }
+clap = { version = "4.5.51", features = ["derive", "std"], default-features = false }
+sha2 = "0.10.9"
+shell-words = "1.1.0"
+similar = "2.7.0"
+thiserror = "2.0.17"
+wait-timeout = "0.2.1"
+
+[dev-dependencies]
+assert_cmd = "2.1.1"
+once_cell = "1.21.3"
+predicates = "3.1.3"
+pretty_assertions = "1.4.1"
+tempfile = "3.23.0"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+opt-level = "z"
+debug = false
+
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16
+opt-level = 2
+panic = "unwind"
+strip = "none"
+
+[profile.test]
+opt-level = 0
+debug = 1
+incremental = true
+codegen-units = 256
+lto = false
+debug-assertions = true
+overflow-checks = true

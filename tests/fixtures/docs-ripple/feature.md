@@ -1,0 +1,3 @@
+# Feature
+
+- uses canonical term
