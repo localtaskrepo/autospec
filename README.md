@@ -1,8 +1,5 @@
 # autospec
 
-autospec is now implemented as a standalone Rust CLI at the repository root.
-The legacy Python implementation remains in `legacy/` as migration history and behavioral reference.
-
 autospec started as a practical experiment inside a project that leaned hard into writing specs before writing code.
 
 We deliberately built up a large set of product, architecture, UI, and design docs before implementation because we wanted coding agents to have a solid documentation base to work from. That helped, but it also exposed a new bottleneck: the docs themselves were often close to usable without being quite precise enough, consistent enough, or explicit enough to drive implementation without follow-up questions.
@@ -156,10 +153,27 @@ Git is strongly recommended, but not strictly required if you run with `--no-com
 
 ## Installation
 
+Homebrew on macOS:
+
+```bash
+brew tap localtaskrepo/lotar
+brew install autospec
+autospec --version
+```
+
+Scoop on Windows:
+
+```bash
+scoop bucket add lotar https://github.com/localtaskrepo/scoop-lotar
+scoop install autospec
+autospec --version
+```
+
 From source:
 
 ```bash
 cargo install --path .
+autospec --version
 ```
 
 Without installing globally:
@@ -169,11 +183,13 @@ cargo build --release
 ./target/release/autospec --version
 ```
 
-Tagged releases are intended to publish:
+Tagged releases publish:
 
 - GitHub release archives
 - a Homebrew formula in `localtaskrepo/homebrew-lotar`
 - a Scoop manifest in `localtaskrepo/scoop-lotar`
+
+See `CONTRIBUTING.md` if you want to work on autospec itself or maintain a fork.
 
 ## Git hooks
 
