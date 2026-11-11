@@ -54,7 +54,7 @@ The current implementation already covers a fair amount of the workflow:
 - no-commit mode for experimentation without git writes
 - dirty-doc guardrails with explicit opt-out
 - per-iteration logs and tabular results tracking
-- optional `--no-artifacts` mode to avoid creating a repo-local `.autospec/` directory
+- optional `--no-artifacts` mode to avoid creating a repo-local `.autospec/` directory (agent logs go to a temporary folder that is removed when the run ends)
 - sparse-seed warnings for repos that are too thin to produce project-specific output reliably
 
 ## Current status

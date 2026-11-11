@@ -181,10 +181,14 @@ fn no_artifacts_keeps_repo_clean() {
         "python3 {} --mode no-op --prompt {{prompt}} --cwd {{cwd}} --log {{log}}",
         fake_agent_path().display()
     );
+    let system_temp = tempdir().unwrap();
 
     Command::cargo_bin("autospec")
         .unwrap()
         .current_dir(temp.path())
+        .env("TMPDIR", system_temp.path())
+        .env("TMP", system_temp.path())
+        .env("TEMP", system_temp.path())
         .args([
             "docs/product.md",
             "--agent",
@@ -202,6 +206,11 @@ fn no_artifacts_keeps_repo_clean() {
         ));
 
     assert!(!temp.path().join(".autospec").exists());
+    let left: Vec<_> = fs::read_dir(system_temp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert!(left.is_empty(), "left in the temp folder: {left:?}");
 }
 
 #[test]

@@ -6,11 +6,22 @@ use chrono::Utc;
 
 use crate::error::{AutospecError, Result};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct OutputPaths {
     log_dir: Option<PathBuf>,
     results_file: Option<PathBuf>,
     agent_log_dir: PathBuf,
+    _temp_root: Option<TempRoot>,
+}
+
+/// The temporary folder for agent logs under --no-artifacts, removed when the run ends.
+#[derive(Debug)]
+struct TempRoot(PathBuf);
+
+impl Drop for TempRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 impl OutputPaths {
@@ -70,6 +81,7 @@ pub fn output_paths(repo_root: &Path, no_artifacts: bool) -> OutputPaths {
             log_dir: None,
             results_file: None,
             agent_log_dir,
+            _temp_root: Some(TempRoot(temp_root)),
         }
     } else {
         let base_dir = repo_root.join(".autospec");
@@ -79,6 +91,7 @@ pub fn output_paths(repo_root: &Path, no_artifacts: bool) -> OutputPaths {
             log_dir: Some(log_dir.clone()),
             results_file: Some(results_file),
             agent_log_dir: log_dir,
+            _temp_root: None,
         }
     }
 }
