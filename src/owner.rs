@@ -57,15 +57,13 @@ pub fn parse_questions(file: &str, text: &str) -> Vec<OwnerQuestion> {
             offset = range.end;
             continue;
         }
-        let candidate = &text[start..];
-        let Some(end) = closing_bracket(candidate) else {
+        let Some(end) = closing_bracket(text, start, &code) else {
             break;
         };
-        let raw = &candidate[..=end];
-        if let Some(question) = parse_marker(file, raw) {
+        if let Some(question) = parse_marker(file, &text[start..=end]) {
             questions.push(question);
         }
-        offset = start + end + 1;
+        offset = end + 1;
     }
     questions
 }
@@ -170,10 +168,16 @@ fn code_spans(text: &str, range: Range<usize>) -> Vec<Range<usize>> {
     spans
 }
 
-/// Index of the `]` that closes the `[` at index 0, allowing nested brackets such as links.
-fn closing_bracket(text: &str) -> Option<usize> {
+/// Index in `text` of the `]` that closes the `[` at `start`, allowing nested brackets such
+/// as links. Brackets inside the `code` ranges do not count.
+fn closing_bracket(text: &str, start: usize, code: &[Range<usize>]) -> Option<usize> {
     let mut depth = 0usize;
-    for (index, ch) in text.char_indices() {
+    let mut index = start;
+    while let Some(ch) = text[index..].chars().next() {
+        if let Some(span) = code.iter().find(|range| range.contains(&index)) {
+            index = span.end;
+            continue;
+        }
         match ch {
             '[' => depth += 1,
             ']' => {
@@ -185,6 +189,7 @@ fn closing_bracket(text: &str) -> Option<usize> {
             '\n' if text[index + 1..].starts_with('\n') => return None,
             _ => {}
         }
+        index += ch.len_utf8();
     }
     None
 }
@@ -380,8 +385,36 @@ mod tests {
     }
 
     #[test]
+    fn brackets_in_code_spans_do_not_close_the_marker() {
+        let text = "[NEEDS OWNER: use `]` here? | a) y] and `[NEEDS OWNER: x`] tail]";
+        let questions = parse_questions("docs/a.md", text);
+
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].question, "use `]` here?");
+        assert_eq!(
+            questions[0].options,
+            vec![OwnerOption {
+                key: "a".to_owned(),
+                label: "y".to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn unmatched_backtick_in_marker_is_literal() {
+        let questions = parse_questions("docs/a.md", "[NEEDS OWNER: use ` here? | a) y] after");
+
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].question, "use ` here?");
+        assert_eq!(questions[0].options[0].label, "y");
+    }
+
+    #[test]
     fn ignores_unterminated_markers() {
         let text = "[NEEDS OWNER: open question\n\nNext paragraph]";
+        assert!(parse_questions("docs/a.md", text).is_empty());
+
+        let text = "[NEEDS OWNER: use `x\n\n]` here? | a) y]";
         assert!(parse_questions("docs/a.md", text).is_empty());
     }
 
