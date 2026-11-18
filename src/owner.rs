@@ -1,6 +1,7 @@
 //! Decisions only the owner can make: `[NEEDS OWNER: …]` markers in the docs and the
 //! `## Clarifications` section that records the owner's answers.
 
+use std::ops::Range;
 use std::path::Path;
 
 use crate::docs::read_text_allow_missing;
@@ -44,11 +45,19 @@ pub fn scan_questions(repo_root: &Path, files: &[String]) -> Result<Vec<OwnerQue
     Ok(questions)
 }
 
+/// Open markers in `text`. Markers that start inside a code span or a fenced code block
+/// are examples of the format, not questions.
 pub fn parse_questions(file: &str, text: &str) -> Vec<OwnerQuestion> {
+    let code = code_ranges(text);
     let mut questions = Vec::new();
-    let mut rest = text;
-    while let Some(start) = rest.find(MARKER_START) {
-        let candidate = &rest[start..];
+    let mut offset = 0;
+    while let Some(found) = text[offset..].find(MARKER_START) {
+        let start = offset + found;
+        if let Some(range) = code.iter().find(|range| range.contains(&start)) {
+            offset = range.end;
+            continue;
+        }
+        let candidate = &text[start..];
         let Some(end) = closing_bracket(candidate) else {
             break;
         };
@@ -56,9 +65,109 @@ pub fn parse_questions(file: &str, text: &str) -> Vec<OwnerQuestion> {
         if let Some(question) = parse_marker(file, raw) {
             questions.push(question);
         }
-        rest = &candidate[end + 1..];
+        offset = start + end + 1;
     }
     questions
+}
+
+/// Byte ranges of fenced code blocks and inline code spans.
+fn code_ranges(text: &str) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut fence: Option<(char, usize, usize)> = None;
+    let mut paragraph: Option<Range<usize>> = None;
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let line_range = offset..offset + line.len();
+        offset = line_range.end;
+
+        if let Some((ch, len, start)) = fence {
+            if fence_run(line).is_some_and(|(close, close_len, info)| {
+                close == ch && close_len >= len && info.trim().is_empty()
+            }) {
+                ranges.push(start..line_range.end);
+                fence = None;
+            }
+            continue;
+        }
+
+        let opens = fence_run(line).filter(|(ch, _, info)| *ch == '~' || !info.contains('`'));
+        if (opens.is_some() || line.trim().is_empty())
+            && let Some(range) = paragraph.take()
+        {
+            ranges.extend(code_spans(text, range));
+        }
+        match opens {
+            Some((ch, len, _)) => fence = Some((ch, len, line_range.start)),
+            None if line.trim().is_empty() => {}
+            None => {
+                paragraph =
+                    Some(paragraph.map_or(line_range.clone(), |range| range.start..line_range.end));
+            }
+        }
+    }
+    if let Some((_, _, start)) = fence {
+        ranges.push(start..text.len());
+    }
+    if let Some(range) = paragraph {
+        ranges.extend(code_spans(text, range));
+    }
+    ranges.sort_by_key(|range| range.start);
+    ranges
+}
+
+/// The fence character, its run length and the rest of the line, when `line` starts a fence.
+fn fence_run(line: &str) -> Option<(char, usize, &str)> {
+    let trimmed = line.trim_start();
+    let ch = trimmed
+        .chars()
+        .next()
+        .filter(|ch| *ch == '`' || *ch == '~')?;
+    let len = trimmed.chars().take_while(|c| *c == ch).count();
+    (len >= 3).then(|| (ch, len, &trimmed[len..]))
+}
+
+/// Code spans in `text[range]`: a backtick run closed by the next run of the same length.
+fn code_spans(text: &str, range: Range<usize>) -> Vec<Range<usize>> {
+    let bytes = text.as_bytes();
+    let run_at = |index: usize| {
+        bytes[index..range.end]
+            .iter()
+            .take_while(|byte| **byte == b'`')
+            .count()
+    };
+    let mut spans = Vec::new();
+    let mut index = range.start;
+    while index < range.end {
+        match bytes[index] {
+            b'\\' => index += 2,
+            b'`' => {
+                let len = run_at(index);
+                let mut search = index + len;
+                let mut close = None;
+                while search < range.end {
+                    if bytes[search] == b'`' {
+                        let run = run_at(search);
+                        if run == len {
+                            close = Some(search + run);
+                            break;
+                        }
+                        search += run;
+                    } else {
+                        search += 1;
+                    }
+                }
+                match close {
+                    Some(end) => {
+                        spans.push(index..end);
+                        index = end;
+                    }
+                    None => index += len,
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    spans
 }
 
 /// Index of the `]` that closes the `[` at index 0, allowing nested brackets such as links.
@@ -123,10 +232,22 @@ fn option_key(index: usize) -> String {
     char::from(b'a' + (index % 26) as u8).to_string()
 }
 
-/// Replaces the marker with the answer and records `- Q: … → A: …` under
+/// Replaces the marker (its first copy outside code) with the answer and records `- Q: … → A: …` under
 /// `## Clarifications` / `### Session <date>`.
 pub fn write_back(text: &str, question: &OwnerQuestion, answer: &str, date: &str) -> String {
-    let replaced = text.replacen(&question.raw, answer, 1);
+    let code = code_ranges(text);
+    let replaced = match text
+        .match_indices(&question.raw)
+        .map(|(start, _)| start)
+        .find(|start| !code.iter().any(|range| range.contains(start)))
+    {
+        Some(start) => format!(
+            "{}{answer}{}",
+            &text[..start],
+            &text[start + question.raw.len()..]
+        ),
+        None => text.to_owned(),
+    };
     let entry = format!("- Q: {} → A: {}", question.question, answer);
     add_clarification(&replaced, &entry, date)
 }
@@ -262,6 +383,57 @@ mod tests {
     fn ignores_unterminated_markers() {
         let text = "[NEEDS OWNER: open question\n\nNext paragraph]";
         assert!(parse_questions("docs/a.md", text).is_empty());
+    }
+
+    #[test]
+    fn skips_markers_in_code_spans() {
+        let text = format!(
+            "Mark it as `{MARKER}` or ``[NEEDS OWNER: q | a) `x` ]``.\n\
+             Split `[NEEDS OWNER: across\nlines | a) x]` span.\n\n\
+             Escaped \\`{MARKER}.\n"
+        );
+        let questions = parse_questions("docs/a.md", &text);
+
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].raw, MARKER);
+    }
+
+    #[test]
+    fn skips_markers_in_fenced_blocks() {
+        let text = format!(
+            "```md\n{MARKER}\n```\n\n  ~~~~\n{MARKER}\n~~~\n~~~~\n\nOpen: [NEEDS OWNER: use `x`? | a) yes]\n\n```\n{MARKER}\n"
+        );
+        let questions = parse_questions("docs/a.md", &text);
+
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].question, "use `x`?");
+    }
+
+    #[test]
+    fn repo_docs_marker_examples_are_not_questions() {
+        for (file, text) in [
+            ("README.md", include_str!("../README.md")),
+            (
+                "docs/rust-v1-spec.md",
+                include_str!("../docs/rust-v1-spec.md"),
+            ),
+            (
+                "templates/default_prompt.md",
+                include_str!("../templates/default_prompt.md"),
+            ),
+        ] {
+            assert_eq!(parse_questions(file, text), Vec::new(), "{file}");
+        }
+    }
+
+    #[test]
+    fn write_back_skips_copy_in_code_span() {
+        let text = format!("Format: `{MARKER}`\n\nRetention: {MARKER}.\n");
+        let question = &parse_questions("docs/logs.md", &text)[0];
+
+        let updated = write_back(&text, question, "30 days", "2026-11-17");
+
+        assert!(updated.starts_with(&format!("Format: `{MARKER}`\n\nRetention: 30 days.\n")));
     }
 
     #[test]

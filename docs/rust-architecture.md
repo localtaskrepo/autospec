@@ -48,7 +48,7 @@ This avoids pushing the full orchestration flow into `main.rs` and makes the con
   Runs git subprocesses for dirty-scope checks, optional branch creation as `autospec/YYYYMMDD-HHMM`, staging of changed tracked files, and per-iteration commits.
 
 - `src/owner.rs`
-  Parses `[NEEDS OWNER: …]` markers in the tracked files into questions with options and a recommendation, and writes an answer back: the marker becomes the answer and `- Q: … → A: …` is added under `## Clarifications` / `### Session <date>`.
+  Parses `[NEEDS OWNER: …]` markers in the tracked files (not those in code spans or fenced code blocks) into questions with options and a recommendation, and writes an answer back: the marker becomes the answer and `- Q: … → A: …` is added under `## Clarifications` / `### Session <date>`.
 
 - `src/lotar.rs`
   Runs the `lotar` CLI for `--ask lotar`: adds a question comment per open owner question and reads the task's comments to find the answers.

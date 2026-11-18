@@ -171,7 +171,7 @@ The convergence engine must use repository file state as the source of truth.
 
 ### owner questions
 
-A point only the owner can decide is marked in the doc as `[NEEDS OWNER: <question> | a) <option> | b) <option> | recommended: a]`, at most 3 per doc (the prompt asks for this; autospec does not cap it). Markers are ordinary doc text, so an unchanged marker does not keep the loop going.
+A point only the owner can decide is marked in the doc as `[NEEDS OWNER: <question> | a) <option> | b) <option> | recommended: a]`, at most 3 per doc (the prompt asks for this; autospec does not cap it). Markers are ordinary doc text, so an unchanged marker does not keep the loop going. A marker inside a code span or a fenced code block is an example, not a question.
 
 - when a stop condition writes `converged` and any tracked file still holds a marker, write status `needs-owner` instead, list each question with its options after the summary, and exit with status `3` once all docs are done
 - with `--ask lotar --ask-task <ID>`, after a `needs-owner` stop add each question not yet asked on task `<ID>` as a lotar question comment titled `<doc path>: <question>`, with the marker's options and recommendation
