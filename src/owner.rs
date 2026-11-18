@@ -53,8 +53,8 @@ pub fn parse_questions(file: &str, text: &str) -> Vec<OwnerQuestion> {
     let mut offset = 0;
     while let Some(found) = text[offset..].find(MARKER_START) {
         let start = offset + found;
-        if let Some(range) = code.iter().find(|range| range.contains(&start)) {
-            offset = range.end;
+        if let Some(code) = code.iter().find(|code| code.range.contains(&start)) {
+            offset = code.range.end;
             continue;
         }
         let Some(end) = closing_bracket(text, start, &code) else {
@@ -68,8 +68,14 @@ pub fn parse_questions(file: &str, text: &str) -> Vec<OwnerQuestion> {
     questions
 }
 
-/// Byte ranges of fenced code blocks and inline code spans.
-fn code_ranges(text: &str) -> Vec<Range<usize>> {
+/// A fenced code block or an inline code span, as a byte range of the doc.
+struct Code {
+    range: Range<usize>,
+    fence: bool,
+}
+
+/// Fenced code blocks and inline code spans, in order.
+fn code_ranges(text: &str) -> Vec<Code> {
     let mut ranges = Vec::new();
     let mut fence: Option<(char, usize, usize)> = None;
     let mut paragraph: Option<Range<usize>> = None;
@@ -82,7 +88,10 @@ fn code_ranges(text: &str) -> Vec<Range<usize>> {
             if fence_run(line).is_some_and(|(close, close_len, info)| {
                 close == ch && close_len >= len && info.trim().is_empty()
             }) {
-                ranges.push(start..line_range.end);
+                ranges.push(Code {
+                    range: start..line_range.end,
+                    fence: true,
+                });
                 fence = None;
             }
             continue;
@@ -104,12 +113,15 @@ fn code_ranges(text: &str) -> Vec<Range<usize>> {
         }
     }
     if let Some((_, _, start)) = fence {
-        ranges.push(start..text.len());
+        ranges.push(Code {
+            range: start..text.len(),
+            fence: true,
+        });
     }
     if let Some(range) = paragraph {
         ranges.extend(code_spans(text, range));
     }
-    ranges.sort_by_key(|range| range.start);
+    ranges.sort_by_key(|code| code.range.start);
     ranges
 }
 
@@ -125,7 +137,7 @@ fn fence_run(line: &str) -> Option<(char, usize, &str)> {
 }
 
 /// Code spans in `text[range]`: a backtick run closed by the next run of the same length.
-fn code_spans(text: &str, range: Range<usize>) -> Vec<Range<usize>> {
+fn code_spans(text: &str, range: Range<usize>) -> Vec<Code> {
     let bytes = text.as_bytes();
     let run_at = |index: usize| {
         bytes[index..range.end]
@@ -156,7 +168,10 @@ fn code_spans(text: &str, range: Range<usize>) -> Vec<Range<usize>> {
                 }
                 match close {
                     Some(end) => {
-                        spans.push(index..end);
+                        spans.push(Code {
+                            range: index..end,
+                            fence: false,
+                        });
                         index = end;
                     }
                     None => index += len,
@@ -169,13 +184,17 @@ fn code_spans(text: &str, range: Range<usize>) -> Vec<Range<usize>> {
 }
 
 /// Index in `text` of the `]` that closes the `[` at `start`, allowing nested brackets such
-/// as links. Brackets inside the `code` ranges do not count.
-fn closing_bracket(text: &str, start: usize, code: &[Range<usize>]) -> Option<usize> {
+/// as links. Brackets inside code spans do not count. A marker is paragraph text: a blank
+/// line or a fenced code block ends it unclosed.
+fn closing_bracket(text: &str, start: usize, code: &[Code]) -> Option<usize> {
     let mut depth = 0usize;
     let mut index = start;
     while let Some(ch) = text[index..].chars().next() {
-        if let Some(span) = code.iter().find(|range| range.contains(&index)) {
-            index = span.end;
+        if let Some(code) = code.iter().find(|code| code.range.contains(&index)) {
+            if code.fence {
+                return None;
+            }
+            index = code.range.end;
             continue;
         }
         match ch {
@@ -244,7 +263,7 @@ pub fn write_back(text: &str, question: &OwnerQuestion, answer: &str, date: &str
     let replaced = match text
         .match_indices(&question.raw)
         .map(|(start, _)| start)
-        .find(|start| !code.iter().any(|range| range.contains(start)))
+        .find(|start| !code.iter().any(|code| code.range.contains(start)))
     {
         Some(start) => format!(
             "{}{answer}{}",
@@ -407,6 +426,15 @@ mod tests {
         assert_eq!(questions.len(), 1);
         assert_eq!(questions[0].question, "use ` here?");
         assert_eq!(questions[0].options[0].label, "y");
+    }
+
+    #[test]
+    fn fenced_block_ends_the_marker_unclosed() {
+        let text = "[NEEDS OWNER: q\n```\n\n\n```\n| a) y]";
+        assert!(parse_questions("docs/a.md", text).is_empty());
+
+        let text = "[NEEDS OWNER: q\n~~~\n] | a) y\n~~~\n| b) z]";
+        assert!(parse_questions("docs/a.md", text).is_empty());
     }
 
     #[test]
