@@ -47,6 +47,12 @@ This avoids pushing the full orchestration flow into `main.rs` and makes the con
 - `src/git.rs`
   Runs git subprocesses for dirty-scope checks, optional branch creation as `autospec/YYYYMMDD-HHMM`, staging of changed tracked files, and per-iteration commits.
 
+- `src/owner.rs`
+  Parses `[NEEDS OWNER: …]` markers in the tracked files into questions with options and a recommendation, and writes an answer back: the marker becomes the answer and `- Q: … → A: …` is added under `## Clarifications` / `### Session <date>`.
+
+- `src/lotar.rs`
+  Runs the `lotar` CLI for `--ask lotar`: adds a question comment per open owner question and reads the task's comments to find the answers.
+
 - `src/output.rs`
   For non-dry-run executions, creates `.autospec/logs/`, ensures `.autospec/results.tsv` exists with the header `doc\titerations\tstatus\tdelta\ttimestamp`, appends tab-delimited result rows, and writes per-iteration and per-run logs. In all modes it formats human-readable console output.
 
@@ -85,7 +91,7 @@ Suggested core types for v1:
   Mutable loop state: current iteration number starting at `1`, seen snapshot hashes, low-delta streak length, previous delta string, and previous changed-file count.
 
 - `RunOutcome`
-  Terminal engine result with exact variants `ConvergedNoDiff`, `ConvergedLowDelta`, `Oscillating`, `AgentTimeout`, `AgentFailed`, `CommitFailed`, and `NotConverged`. `output.rs` maps the two converged variants to the legacy `results.tsv` status value `converged`, `AgentTimeout` to `agent-timeout`, `AgentFailed` to `agent-failed`, `CommitFailed` to `commit-failed`, `Oscillating` to `oscillating`, and `NotConverged` to `not-converged`. Agent command-not-found remains an `AutospecError`.
+  Terminal engine result with exact variants `ConvergedNoDiff`, `ConvergedLowDelta`, `Oscillating`, `AgentTimeout`, `AgentFailed`, `CommitFailed`, and `NotConverged`. `output.rs` maps the two converged variants to the legacy `results.tsv` status value `converged`, `AgentTimeout` to `agent-timeout`, `AgentFailed` to `agent-failed`, `CommitFailed` to `commit-failed`, `Oscillating` to `oscillating`, and `NotConverged` to `not-converged`. A converged result whose tracked files still hold owner questions is written as `needs-owner`. Agent command-not-found remains an `AutospecError`.
 
 - `AutospecError`
   User-facing error enum for failures that prevent the run from starting or prevent status reporting, including missing target docs, empty scope, dirty-doc guard failures, unavailable agents, invalid custom command templates, agent command-not-found, pre-commit git failures, and output I/O failures.

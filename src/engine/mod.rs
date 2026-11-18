@@ -3,12 +3,36 @@ use crate::config::{RuntimeConfig, ScopeMode};
 use crate::diff::diff_file;
 use crate::docs::{ScopeDiscovery, discover_scope, repo_relative};
 use crate::error::{AutospecError, Result};
-use crate::git::{create_branch, dirty_docs};
+use crate::git::{create_branch, dirty_docs, stage_and_commit_changes};
+use crate::lotar::{self, AskedQuestions};
 use crate::output::{OutputPaths, output_paths};
+use crate::owner::{OwnerQuestion, scan_questions, write_back};
 
 mod runner;
 
 use runner::ConvergenceRunner;
+
+/// How one doc (or one sweep) ended.
+#[derive(Debug)]
+pub(crate) enum DocOutcome {
+    Converged,
+    /// Converged, but `[NEEDS OWNER: …]` questions are still open.
+    NeedsOwner(Vec<OwnerQuestion>),
+    NotConverged,
+}
+
+/// What a whole run ended with; `main` turns it into the exit status.
+#[derive(Debug, Default)]
+pub struct RunSummary {
+    /// Open owner questions of the docs that ended `needs-owner`.
+    pub owner_questions: Vec<OwnerQuestion>,
+}
+
+impl RunSummary {
+    pub fn needs_owner(&self) -> bool {
+        !self.owner_questions.is_empty()
+    }
+}
 
 #[derive(Debug, Clone)]
 struct RunPlan {
@@ -20,7 +44,7 @@ struct RunPlan {
     focus_doc: Option<String>,
 }
 
-pub fn run(config: RuntimeConfig) -> Result<()> {
+pub fn run(config: RuntimeConfig) -> Result<RunSummary> {
     let discovery = discover_scope(&config)?;
     let agent = resolve_agent(&config)?;
     let outputs = output_paths(&config.repo_root, config.no_artifacts);
@@ -58,7 +82,7 @@ fn run_sweep(
     agent: &ResolvedAgent,
     discovery: &ScopeDiscovery,
     outputs: &OutputPaths,
-) -> Result<()> {
+) -> Result<RunSummary> {
     let plan = RunPlan {
         label: format!(
             "{}/ ({} files)",
@@ -72,7 +96,16 @@ fn run_sweep(
         focus_doc: None,
     };
 
-    let converged = convergence_loop(config, agent, discovery, outputs, &plan)?;
+    let outcome = convergence_loop(config, agent, discovery, outputs, &plan)?;
+    let mut summary = RunSummary::default();
+    let result = match outcome {
+        DocOutcome::Converged => "converged",
+        DocOutcome::NeedsOwner(questions) => {
+            summary.owner_questions = questions;
+            "needs-owner"
+        }
+        DocOutcome::NotConverged => "not converged",
+    };
     println!("\n{}", "═".repeat(51));
     println!("  SUMMARY");
     println!("{}", "═".repeat(51));
@@ -81,21 +114,15 @@ fn run_sweep(
         discovery.scope_dir,
         discovery.scope_files.len()
     );
-    println!(
-        "  Result:        {}",
-        if converged {
-            "converged"
-        } else {
-            "not converged"
-        }
-    );
+    println!("  Result:        {result}");
     println!(
         "  Results:       {}",
         outputs.results_display(config.dry_run)
     );
     println!("  Logs:          {}", outputs.logs_display(config.dry_run));
     println!("{}", "═".repeat(51));
-    Ok(())
+    print_owner_questions(config, &summary.owner_questions);
+    Ok(summary)
 }
 
 fn run_docs(
@@ -103,10 +130,12 @@ fn run_docs(
     agent: &ResolvedAgent,
     discovery: &ScopeDiscovery,
     outputs: &OutputPaths,
-) -> Result<()> {
+) -> Result<RunSummary> {
     let total = discovery.target_docs.len();
     let mut converged = 0u32;
+    let mut needs_owner = 0u32;
     let mut failed = 0u32;
+    let mut summary = RunSummary::default();
 
     for (index, doc) in discovery.target_docs.iter().enumerate() {
         if !config.dry_run && !config.allow_dirty && config.scope == ScopeMode::Strict {
@@ -135,10 +164,13 @@ fn run_docs(
             focus_doc: Some(doc.clone()),
         };
 
-        if convergence_loop(config, agent, discovery, outputs, &plan)? {
-            converged += 1;
-        } else {
-            failed += 1;
+        match convergence_loop(config, agent, discovery, outputs, &plan)? {
+            DocOutcome::Converged => converged += 1,
+            DocOutcome::NeedsOwner(questions) => {
+                needs_owner += 1;
+                summary.owner_questions.extend(questions);
+            }
+            DocOutcome::NotConverged => failed += 1,
         }
     }
 
@@ -147,6 +179,7 @@ fn run_docs(
     println!("{}", "═".repeat(51));
     println!("  Total docs:    {total}");
     println!("  Converged:     {converged}");
+    println!("  Needs owner:   {needs_owner}");
     println!("  Not converged: {failed}");
     println!(
         "  Results:       {}",
@@ -154,7 +187,34 @@ fn run_docs(
     );
     println!("  Logs:          {}", outputs.logs_display(config.dry_run));
     println!("{}", "═".repeat(51));
-    Ok(())
+    print_owner_questions(config, &summary.owner_questions);
+    Ok(summary)
+}
+
+fn print_owner_questions(config: &RuntimeConfig, questions: &[OwnerQuestion]) {
+    if questions.is_empty() {
+        return;
+    }
+    println!("\nQuestions for the owner:");
+    for question in questions {
+        println!("  - {}", question.title());
+        for option in &question.options {
+            let recommended = if question.recommended.as_ref() == Some(&option.key) {
+                " (recommended)"
+            } else {
+                ""
+            };
+            println!("      {}) {}{recommended}", option.key, option.label);
+        }
+    }
+    match &config.ask_lotar_task {
+        Some(task) => println!(
+            "Answer them on lotar task {task}; the next run writes the answers into the docs."
+        ),
+        None => println!(
+            "Answer them in the doc: replace each marker with the decision, or use --ask lotar."
+        ),
+    }
 }
 
 fn convergence_loop(
@@ -163,7 +223,7 @@ fn convergence_loop(
     discovery: &ScopeDiscovery,
     outputs: &OutputPaths,
     plan: &RunPlan,
-) -> Result<bool> {
+) -> Result<DocOutcome> {
     let is_sweep = config.scope == ScopeMode::Sweep;
 
     println!("\n{}", "═".repeat(51));
@@ -181,10 +241,64 @@ fn convergence_loop(
             &runner::build_agent_request(config, discovery, outputs, plan, 1, String::new(), 0),
         )?;
         println!("  ✓ Dry run complete");
-        return Ok(true);
+        return Ok(DocOutcome::Converged);
     }
 
-    ConvergenceRunner::new(config, agent, discovery, outputs, plan)?.run()
+    let asked = match &config.ask_lotar_task {
+        Some(task) => {
+            let asked = AskedQuestions::fetch(&config.repo_root, task)?;
+            write_back_answers(config, plan, &asked)?;
+            Some((task, asked))
+        }
+        None => None,
+    };
+
+    let outcome = ConvergenceRunner::new(config, agent, discovery, outputs, plan)?.run()?;
+
+    if let (Some((task, asked)), DocOutcome::NeedsOwner(questions)) = (&asked, &outcome) {
+        for question in questions
+            .iter()
+            .filter(|question| !asked.was_asked(question))
+        {
+            lotar::ask(&config.repo_root, task, question)?;
+            println!("  ? Asked on {task}: {}", question.title());
+        }
+    }
+    Ok(outcome)
+}
+
+/// Writes the owner's lotar answers into the docs before the loop starts, so the agent
+/// makes the rest of the doc agree with them. Commits them unless `--no-commit`.
+fn write_back_answers(
+    config: &RuntimeConfig,
+    plan: &RunPlan,
+    asked: &AskedQuestions,
+) -> Result<()> {
+    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let mut changed = Vec::new();
+    for question in scan_questions(&config.repo_root, &plan.tracked_files)? {
+        let Some(answer) = asked.answer(&question) else {
+            continue;
+        };
+        let path = config.repo_root.join(&question.file);
+        let text = std::fs::read_to_string(&path)
+            .map_err(|source| AutospecError::io("reading", &path, source))?;
+        std::fs::write(&path, write_back(&text, &question, answer, &date))
+            .map_err(|source| AutospecError::io("writing", &path, source))?;
+        println!("  ✓ Owner answered: {} → {answer}", question.title());
+        if !changed.contains(&question.file) {
+            changed.push(question.file.clone());
+        }
+    }
+
+    if !changed.is_empty() && !config.no_commit {
+        stage_and_commit_changes(
+            &config.repo_root,
+            &changed,
+            &format!("autospec: {} - owner answers", plan.results_key),
+        )?;
+    }
+    Ok(())
 }
 fn print_header(config: &RuntimeConfig, discovery: &ScopeDiscovery, agent: &ResolvedAgent) {
     println!("autospec - doc convergence loop");

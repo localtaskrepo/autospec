@@ -43,6 +43,9 @@ pub enum AutospecError {
     #[error("git command failed ({args}): {detail}")]
     GitFailed { args: String, detail: String },
 
+    #[error("lotar command failed ({args}): {detail}")]
+    LotarFailed { args: String, detail: String },
+
     #[error("in-scope docs already have uncommitted changes: {0}")]
     DirtyDocs(String),
 }

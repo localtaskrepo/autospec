@@ -269,3 +269,132 @@ fn help_output_describes_key_flags() {
         ))
         .stdout(predicate::str::contains("Environment overrides:"));
 }
+
+fn owner_question_run(temp: &Path) -> Command {
+    copy_fixture(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/docs-basic"),
+        &temp.join("docs"),
+    );
+    let template = format!(
+        "python3 {} --mode owner-question --prompt {{prompt}} --cwd {{cwd}} --log {{log}}",
+        fake_agent_path().display()
+    );
+    let mut command = Command::cargo_bin("autospec").unwrap();
+    command.current_dir(temp).args([
+        "docs/product.md",
+        "--agent",
+        "custom",
+        "--agent-cmd",
+        &template,
+        "--no-commit",
+        "--allow-dirty",
+    ]);
+    command
+}
+
+#[test]
+fn open_owner_decision_ends_needs_owner() {
+    let temp = tempdir().unwrap();
+
+    owner_question_run(temp.path())
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("Needs owner:   1"))
+        .stdout(predicate::str::contains(
+            "docs/product.md: How long do we keep data?",
+        ))
+        .stdout(predicate::str::contains("a) 30 days (recommended)"));
+
+    let results = fs::read_to_string(temp.path().join(".autospec/results.tsv")).unwrap();
+    assert!(results.contains("docs/product.md\t2\tneeds-owner"));
+    let doc = fs::read_to_string(temp.path().join("docs/product.md")).unwrap();
+    assert!(doc.contains("- initial requirement"));
+    assert_eq!(doc.matches("[NEEDS OWNER:").count(), 1);
+}
+
+#[test]
+fn ask_lotar_requires_a_task() {
+    let temp = tempdir().unwrap();
+
+    owner_question_run(temp.path())
+        .args(["--ask", "lotar"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("--ask lotar requires --ask-task"));
+}
+
+#[cfg(unix)]
+#[test]
+fn ask_lotar_files_questions_and_writes_back_answers() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempdir().unwrap();
+    let bin = temp.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    symlink(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/fake_lotar.py"),
+        bin.join("lotar"),
+    )
+    .unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let log = temp.path().join("lotar.log");
+
+    // First run: the question is filed once on the task.
+    owner_question_run(temp.path())
+        .args(["--ask", "lotar", "--ask-task", "DOCS-1"])
+        .env("PATH", &path)
+        .env("FAKE_LOTAR_LOG", &log)
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("Asked on DOCS-1"));
+    let calls = fs::read_to_string(&log).unwrap();
+    assert_eq!(calls.lines().count(), 1);
+    assert!(calls.contains(r#""--question", "docs/product.md: How long do we keep data?""#));
+    assert!(calls.contains(r#""--option", "a: 30 days", "--option", "b: 1 year""#));
+    assert!(calls.contains(r#""--recommend", "a""#));
+
+    // Second run: the owner answered b; the answer replaces the marker and is recorded.
+    let comments = temp.path().join("comments.json");
+    fs::write(
+        &comments,
+        r#"{"items": [
+          {"date": "2026-11-18T00:00:00+00:00", "text": "docs/product.md: How long do we keep data?\n\nOptions:\n- a: 30 days (recommended)\n- b: 1 year",
+           "question": {"options": [{"key": "a", "label": "30 days"}, {"key": "b", "label": "1 year"}], "recommended": "a"}},
+          {"date": "2026-11-18T01:00:00+00:00", "text": "Answer: b (1 year)", "answer": {"to": "2026-11-18T00:00:00+00:00", "choice": ["b"]}}
+        ]}"#,
+    )
+    .unwrap();
+    let template = format!(
+        "python3 {} --mode no-op --prompt {{prompt}} --cwd {{cwd}} --log {{log}}",
+        fake_agent_path().display()
+    );
+    Command::cargo_bin("autospec")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "docs/product.md",
+            "--agent",
+            "custom",
+            "--agent-cmd",
+            &template,
+            "--no-commit",
+            "--allow-dirty",
+            "--ask",
+            "lotar",
+            "--ask-task",
+            "DOCS-1",
+        ])
+        .env("PATH", &path)
+        .env("FAKE_LOTAR_LOG", &log)
+        .env("FAKE_LOTAR_COMMENTS", &comments)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Converged:     1"));
+
+    let doc = fs::read_to_string(temp.path().join("docs/product.md")).unwrap();
+    assert!(!doc.contains("[NEEDS OWNER:"));
+    assert!(doc.contains("- retention: 1 year\n"));
+    assert!(doc.contains("## Clarifications\n\n### Session "));
+    assert!(doc.contains("- Q: How long do we keep data? → A: 1 year\n"));
+    assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 1);
+}

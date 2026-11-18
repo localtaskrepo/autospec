@@ -44,6 +44,14 @@ def main() -> int:
             state.write_text("done\n")
         return 0
 
+    if args.mode == "owner-question" and target_path is not None:
+        if "[NEEDS OWNER:" not in target_path.read_text():
+            append_line(
+                target_path,
+                "- retention: [NEEDS OWNER: How long do we keep data? | a) 30 days | b) 1 year | recommended: a]",
+            )
+        return 0
+
     if args.mode == "oscillate" and target_path is not None:
         text = target_path.read_text()
         marker = "- fake-agent: oscillate"

@@ -33,6 +33,14 @@ For each iteration it:
 4. compares the new text to the previous iteration
 5. stops when the doc stabilizes, oscillates, times out, or hits the iteration limit
 
+A decision only the owner can make is not the agent's to guess. The agent marks it as `[NEEDS OWNER: question | a) … | b) … | recommended: a]` (at most 3 per doc). A doc that converges with open markers ends `needs-owner`: autospec lists the questions and exits with status `3`. Answer by replacing the marker in the doc, or let lotar collect the answers:
+
+```bash
+autospec --ask lotar --ask-task DOCS-12 docs/product.md
+```
+
+This adds each open question once as a lotar question comment on `DOCS-12`. The next run writes the answers back into the doc as dated `- Q: … → A: …` lines under `## Clarifications` and converges the doc on them.
+
 It supports three working modes:
 
 - `strict`: only the target doc is in scope
@@ -56,6 +64,7 @@ The current implementation already covers a fair amount of the workflow:
 - per-iteration logs and tabular results tracking
 - optional `--no-artifacts` mode to avoid creating a repo-local `.autospec/` directory (agent logs go to a temporary folder that is removed when the run ends)
 - sparse-seed warnings for repos that are too thin to produce project-specific output reliably
+- owner questions: undecidable points become `[NEEDS OWNER: …]` markers and a `needs-owner` stop (exit status `3`), optionally filed in lotar with answers written back
 
 ## Current status
 
@@ -271,6 +280,7 @@ autospec --scope sweep --agent-timeout 0 docs/ui
 - `--no-artifacts`
 - `--max-scope-files N`
 - `--dry-run`
+- `--ask lotar --ask-task <ID>`
 
 ## How to tune it for your own project
 

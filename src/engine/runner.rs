@@ -8,10 +8,11 @@ use crate::docs::ScopeDiscovery;
 use crate::error::Result;
 use crate::git::stage_and_commit_changes;
 use crate::output::{OutputPaths, append_log, append_result, reset_run_logs};
+use crate::owner::scan_questions;
 use crate::prompt::{DEFAULT_PROMPT, PromptContext, build_prompt};
 use crate::state::snapshot_scope;
 
-use super::{RunPlan, print_change_summary};
+use super::{DocOutcome, RunPlan, print_change_summary};
 
 type AgentExecutor = fn(&ResolvedAgent, &AgentRunRequest) -> Result<AgentRunResult>;
 
@@ -72,7 +73,7 @@ impl<'a> ConvergenceRunner<'a> {
         })
     }
 
-    pub(super) fn run(mut self) -> Result<bool> {
+    pub(super) fn run(mut self) -> Result<DocOutcome> {
         for iteration in 1..=self.config.max_iters {
             if let Some(done) = self.run_iteration(iteration)? {
                 return Ok(done);
@@ -90,10 +91,10 @@ impl<'a> ConvergenceRunner<'a> {
             "not-converged",
             &self.last_delta,
         )?;
-        Ok(false)
+        Ok(DocOutcome::NotConverged)
     }
 
-    fn run_iteration(&mut self, iteration: u32) -> Result<Option<bool>> {
+    fn run_iteration(&mut self, iteration: u32) -> Result<Option<DocOutcome>> {
         println!("── iteration {iteration}/{}", self.config.max_iters);
 
         let before = snapshot_scope(&self.config.repo_root, &self.plan.tracked_files)?;
@@ -149,7 +150,7 @@ impl<'a> ConvergenceRunner<'a> {
                 &delta.display,
                 format!("[{iteration}] oscillating ({})", delta.display),
             )?;
-            return Ok(Some(false));
+            return Ok(Some(DocOutcome::NotConverged));
         }
         self.seen_states.insert(after.hash.clone());
 
@@ -198,7 +199,7 @@ impl<'a> ConvergenceRunner<'a> {
         before: &crate::state::ScopeSnapshot,
         after: &crate::state::ScopeSnapshot,
         delta: &crate::diff::ScopeDelta,
-    ) -> Result<Option<bool>> {
+    ) -> Result<Option<DocOutcome>> {
         if !self.config.no_commit {
             let changed_files = delta
                 .files
@@ -220,7 +221,7 @@ impl<'a> ConvergenceRunner<'a> {
                     &delta.display,
                     format!("[{iteration}] commit-failed: {error}"),
                 )?;
-                return Ok(Some(false));
+                return Ok(Some(DocOutcome::NotConverged));
             }
             print_change_summary(self.plan, before, after, delta, "committing");
         } else {
@@ -264,7 +265,7 @@ impl<'a> ConvergenceRunner<'a> {
         }
     }
 
-    fn finish_no_diff(&self, iteration: u32) -> Result<bool> {
+    fn finish_no_diff(&self, iteration: u32) -> Result<DocOutcome> {
         println!("  ✓ No changes - converged after {iteration} iteration(s)");
         self.finish_iteration(
             iteration,
@@ -277,14 +278,33 @@ impl<'a> ConvergenceRunner<'a> {
         )
     }
 
+    /// Records the stop. A converged scope that still holds `[NEEDS OWNER: …]` markers
+    /// ends `needs-owner`: the open questions count as stable text, not as churn.
     fn finish_iteration(
         &self,
         iteration: u32,
         outcome: IterationOutcome<'_>,
         log_line: impl AsRef<str>,
-    ) -> Result<bool> {
-        self.record_iteration_status(iteration, outcome.status, outcome.delta, log_line)?;
-        Ok(outcome.converged)
+    ) -> Result<DocOutcome> {
+        if !outcome.converged {
+            self.record_iteration_status(iteration, outcome.status, outcome.delta, log_line)?;
+            return Ok(DocOutcome::NotConverged);
+        }
+
+        let questions = scan_questions(&self.config.repo_root, &self.plan.tracked_files)?;
+        if questions.is_empty() {
+            self.record_iteration_status(iteration, outcome.status, outcome.delta, log_line)?;
+            return Ok(DocOutcome::Converged);
+        }
+
+        println!("  ? Needs owner: {} open question(s)", questions.len());
+        self.record_iteration_status(
+            iteration,
+            "needs-owner",
+            outcome.delta,
+            format!("{} -> needs-owner ({})", log_line.as_ref(), questions.len()),
+        )?;
+        Ok(DocOutcome::NeedsOwner(questions))
     }
 
     fn record_iteration_status(
@@ -393,6 +413,24 @@ mod tests {
         Ok(AgentRunResult::Completed)
     }
 
+    fn owner_question_agent(
+        _: &ResolvedAgent,
+        request: &AgentRunRequest,
+    ) -> Result<AgentRunResult> {
+        let path = request.cwd.join("docs/product.md");
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        if !text.contains("[NEEDS OWNER:") {
+            fs::write(
+                path,
+                format!(
+                    "{text}- retention: [NEEDS OWNER: How long do we keep data? | a) 30 days | b) 1 year | recommended: a]\n"
+                ),
+            )
+            .unwrap();
+        }
+        Ok(AgentRunResult::Completed)
+    }
+
     fn setup_runner(
         max_iters: u32,
         threshold: usize,
@@ -434,6 +472,7 @@ mod tests {
             dry_run: false,
             no_artifacts: false,
             max_scope_files: None,
+            ask_lotar_task: None,
         };
 
         let discovery = discover_scope(&config).unwrap();
@@ -477,7 +516,7 @@ mod tests {
         .run()
         .unwrap();
 
-        assert!(result);
+        assert!(matches!(result, DocOutcome::Converged));
         let results = fs::read_to_string(outputs.results_file().unwrap()).unwrap();
         assert!(results.contains("docs/product.md\t1\tconverged"));
     }
@@ -499,7 +538,7 @@ mod tests {
         .run()
         .unwrap();
 
-        assert!(!result);
+        assert!(matches!(result, DocOutcome::NotConverged));
         let results = fs::read_to_string(outputs.results_file().unwrap()).unwrap();
         assert!(results.contains("docs/product.md\t2\toscillating"));
     }
@@ -521,8 +560,34 @@ mod tests {
         .run()
         .unwrap();
 
-        assert!(result);
+        assert!(matches!(result, DocOutcome::Converged));
         let results = fs::read_to_string(outputs.results_file().unwrap()).unwrap();
         assert!(results.contains("docs/product.md\t2\tconverged\t+1/-0"));
+    }
+
+    #[test]
+    fn runner_ends_needs_owner_when_converged_with_open_marker() {
+        let (_temp, config, discovery, outputs, plan, agent) =
+            setup_runner(5, 10, 2, owner_question_agent);
+
+        let result = ConvergenceRunner::with_executor(
+            &config,
+            &agent,
+            &discovery,
+            &outputs,
+            &plan,
+            owner_question_agent,
+        )
+        .unwrap()
+        .run()
+        .unwrap();
+
+        let DocOutcome::NeedsOwner(questions) = result else {
+            panic!("expected needs-owner, got {result:?}");
+        };
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].question, "How long do we keep data?");
+        let results = fs::read_to_string(outputs.results_file().unwrap()).unwrap();
+        assert!(results.contains("docs/product.md\t2\tneeds-owner"));
     }
 }

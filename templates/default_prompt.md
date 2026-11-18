@@ -38,7 +38,15 @@ Apply each of these lenses. Edit the file directly — do not write suggestions.
 ### Agent-executability
 - Could a coding agent implement what this doc describes without asking clarifying questions?
 - Are data structures, API contracts, or component interfaces explicit enough to generate code from?
-- Are "open questions" or "TBD" items still genuinely undecided? If the answer is obvious from the rest of the docs, resolve it. If it's genuinely undecided, sharpen the options.
+- Are "open questions" or "TBD" items still genuinely undecided? If the answer is obvious from the rest of the docs, resolve it. If only the owner can decide it, mark it as described under "Owner decisions".
+
+### Owner decisions
+- A point only the project owner can decide (a product choice, a trade-off, a limit the docs give no basis for) is not yours to choose. Do not pick an option and do not reshuffle the options on later passes. Mark it in place instead:
+  `[NEEDS OWNER: <question> | a) <option> | b) <option> | recommended: a]`
+- Use 2 to 5 options of a few words each; recommend the option the rest of the docs support best. Keep the marker on one line and do not use `|` inside it.
+- At most 3 markers per doc. If more points are open, mark the 3 that block implementation most and leave the rest as they are.
+- An existing marker is settled text: leave it exactly as it is unless the docs now answer it; then replace the marker with the answer.
+- `- Q: … → A: …` lines under `## Clarifications` are the owner's answers. Make the rest of the doc agree with them; never change, reopen or remove them.
 
 ### Structure
 - No orphan sections that belong in a different doc
@@ -75,6 +83,6 @@ If the doc needs no substantive changes — it is precise, complete, consistent,
 CONVERGED
 ```
 
-Nothing else. This signals that the doc has stabilized.
+Nothing else. This signals that the doc has stabilized. Open `[NEEDS OWNER: …]` markers do not keep a doc from converging: autospec hands them to the owner.
 
 **The bar for CONVERGED is "good enough to implement from", not "perfect".** A doc that is clear, specific, and internally consistent is converged, even if you could imagine minor wording improvements.

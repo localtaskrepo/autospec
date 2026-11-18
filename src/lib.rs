@@ -6,7 +6,9 @@ pub mod docs;
 pub mod engine;
 pub mod error;
 pub mod git;
+pub mod lotar;
 pub mod output;
+pub mod owner;
 pub mod prompt;
 pub mod state;
 

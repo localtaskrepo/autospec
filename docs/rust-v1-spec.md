@@ -75,6 +75,8 @@ Required CLI parameters and flags:
 - `--no-branch` boolean flag; default `false`
 - `--max-scope-files <n>` where `n` is an integer `>= 0`; `0` means unlimited; enforce this cap only for `ripple` and `sweep`; default `0`
 - `--dry-run` boolean flag; default `false`
+- `--ask lotar` optional; files `needs-owner` questions in lotar and writes answers back, see [owner questions](#owner-questions); requires `--ask-task`
+- `--ask-task <task-id>` lotar task that receives the questions; valid only with `--ask lotar`
 
 Required environment variable support:
 
@@ -95,6 +97,8 @@ Required environment variable support:
 - `NO_COMMIT`
 - `NO_BRANCH`
 - `DRY_RUN`
+- `ASK`
+- `ASK_TASK`
 
 Normalization rules:
 
@@ -165,6 +169,14 @@ The convergence engine must use repository file state as the source of truth.
 - commit failure when commits are enabled; write status `commit-failed`
 - maximum iterations reached without another stop condition; write status `not-converged`
 
+### owner questions
+
+A point only the owner can decide is marked in the doc as `[NEEDS OWNER: <question> | a) <option> | b) <option> | recommended: a]`, at most 3 per doc (the prompt asks for this; autospec does not cap it). Markers are ordinary doc text, so an unchanged marker does not keep the loop going.
+
+- when a stop condition writes `converged` and any tracked file still holds a marker, write status `needs-owner` instead, list each question with its options after the summary, and exit with status `3` once all docs are done
+- with `--ask lotar --ask-task <ID>`, after a `needs-owner` stop add each question not yet asked on task `<ID>` as a lotar question comment titled `<doc path>: <question>`, with the marker's options and recommendation
+- at the start of each doc's loop with `--ask lotar`, read the task's comments; for every marker whose question has an answer, replace the marker with the answer (chosen option labels, then the note in parentheses; a free-text answer is the note) and add `- Q: <question> → A: <answer>` under `## Clarifications` / `### Session <YYYY-MM-DD>`; commit these edits as `autospec: <doc key> - owner answers` unless `--no-commit`
+
 ### near-convergence rule
 
 - sum insertions and deletions across the tracked scope after each iteration
@@ -204,7 +216,7 @@ Row semantics:
 - `doc` is the repo-relative focus doc path for `strict` and `ripple`
 - `doc` is `sweep:<scope_dir>` for `sweep`
 - `iterations` is the completed iteration count at stop time
-- `status` must be one of `converged`, `oscillating`, `agent-timeout`, `agent-failed`, `commit-failed`, or `not-converged`
+- `status` must be one of `converged`, `needs-owner`, `oscillating`, `agent-timeout`, `agent-failed`, `commit-failed`, or `not-converged`
 - `delta` is `+<insertions>/-<deletions>` for stop conditions reached after a diff is computed, otherwise the empty string
 - `timestamp` is a UTC ISO 8601 timestamp
 

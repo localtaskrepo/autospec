@@ -3,7 +3,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::cli::{AgentArg, CliArgs, ScopeArg};
+use crate::cli::{AgentArg, AskArg, CliArgs, ScopeArg};
 use crate::error::{AutospecError, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +86,8 @@ pub struct RuntimeConfig {
     pub dry_run: bool,
     pub no_artifacts: bool,
     pub max_scope_files: Option<usize>,
+    /// lotar task that receives owner questions (`--ask lotar --ask-task <ID>`).
+    pub ask_lotar_task: Option<String>,
 }
 
 impl RuntimeConfig {
@@ -110,6 +112,8 @@ impl RuntimeConfig {
             no_branch,
             dry_run,
             no_artifacts,
+            ask,
+            ask_task,
         } = cli;
 
         let repo_root = env::current_dir()
@@ -161,6 +165,8 @@ impl RuntimeConfig {
             ));
         }
 
+        let ask_lotar_task = resolve_ask(ask, ask_task)?;
+
         Ok(Self {
             repo_root,
             target,
@@ -181,7 +187,36 @@ impl RuntimeConfig {
             dry_run,
             no_artifacts,
             max_scope_files,
+            ask_lotar_task,
         })
+    }
+}
+
+fn resolve_ask(cli_ask: Option<AskArg>, cli_task: Option<String>) -> Result<Option<String>> {
+    let ask = match cli_ask {
+        Some(AskArg::Lotar) => true,
+        None => match env::var("ASK").ok().as_deref() {
+            None | Some("") => false,
+            Some("lotar") => true,
+            Some(_) => {
+                return Err(AutospecError::InvalidConfig("ASK must be lotar".to_owned()));
+            }
+        },
+    };
+    let task = cli_task
+        .or_else(|| env::var("ASK_TASK").ok())
+        .map(|task| task.trim().to_owned())
+        .filter(|task| !task.is_empty());
+
+    match (ask, task) {
+        (true, Some(task)) => Ok(Some(task)),
+        (true, None) => Err(AutospecError::InvalidConfig(
+            "--ask lotar requires --ask-task or ASK_TASK".to_owned(),
+        )),
+        (false, Some(_)) => Err(AutospecError::InvalidConfig(
+            "--ask-task requires --ask lotar".to_owned(),
+        )),
+        (false, None) => Ok(None),
     }
 }
 

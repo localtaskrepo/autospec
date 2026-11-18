@@ -26,12 +26,18 @@ pub enum AgentArg {
     Custom,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AskArg {
+    #[value(help = "File owner questions as lotar question comments on --ask-task")]
+    Lotar,
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "autospec",
     about = "Converge markdown specifications using local AI coding agent CLIs",
     long_about = "Run an AI coding agent in a convergence loop against markdown docs.\n\nUse strict mode to refine one file in isolation, ripple mode to allow limited cross-doc fixes in the surrounding scope, or sweep mode to review a whole folder and touch the smallest set of files needed.",
-    after_long_help = "Examples:\n  autospec docs/product.md\n  autospec --no-commit --no-artifacts docs/product.md\n  autospec --scope ripple docs/entity-dictionary.md\n  autospec --scope sweep docs/ui\n  autospec --agent custom --agent-cmd 'my-agent --prompt {prompt} --log {log}' docs/product.md\n\nEnvironment overrides:\n  AGENT, AGENT_CMD, MODEL, EFFORT, AGENT_TIMEOUT, MAX_ITERS, THRESHOLD,\n  STABLE_ITERS, SCOPE, MAX_SCOPE_FILES, GOAL, DOC_DIR, SKIP_READMES,\n  ALLOW_DIRTY, NO_COMMIT, NO_BRANCH, DRY_RUN, NO_ARTIFACTS\n\nNotes:\n  --agent-timeout 0 disables the timeout.\n  --no-artifacts avoids creating a repo-local .autospec/ directory.",
+    after_long_help = "Examples:\n  autospec docs/product.md\n  autospec --no-commit --no-artifacts docs/product.md\n  autospec --scope ripple docs/entity-dictionary.md\n  autospec --scope sweep docs/ui\n  autospec --agent custom --agent-cmd 'my-agent --prompt {prompt} --log {log}' docs/product.md\n\nEnvironment overrides:\n  AGENT, AGENT_CMD, MODEL, EFFORT, AGENT_TIMEOUT, MAX_ITERS, THRESHOLD,\n  STABLE_ITERS, SCOPE, MAX_SCOPE_FILES, GOAL, DOC_DIR, SKIP_READMES,\n  ALLOW_DIRTY, NO_COMMIT, NO_BRANCH, DRY_RUN, NO_ARTIFACTS, ASK, ASK_TASK\n\nNotes:\n  --agent-timeout 0 disables the timeout.\n  --no-artifacts avoids creating a repo-local .autospec/ directory.\n\nExit status:\n  0  the run finished (see the summary for docs that did not converge)\n  1  error\n  3  needs-owner: a doc converged with open [NEEDS OWNER: ...] questions",
     version
 )]
 pub struct CliArgs {
@@ -147,6 +153,24 @@ pub struct CliArgs {
         long_help = "Exclude README.md files from scope discovery when autospec expands a directory target."
     )]
     pub skip_readmes: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Owner Questions",
+        help = "Where to file open owner questions",
+        long_help = "Where to file the [NEEDS OWNER: ...] questions of docs that end needs-owner. lotar adds each question once as a question comment on --ask-task; on later runs autospec writes the answers back into the doc as dated Q -> A lines under ## Clarifications."
+    )]
+    pub ask: Option<AskArg>,
+
+    #[arg(
+        long,
+        value_name = "TASK_ID",
+        help_heading = "Owner Questions",
+        help = "lotar task that receives the questions",
+        long_help = "lotar task ID (for example DOCS-12) that receives the question comments. Required with --ask lotar."
+    )]
+    pub ask_task: Option<String>,
 
     #[arg(
         long,
