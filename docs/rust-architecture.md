@@ -51,7 +51,7 @@ This avoids pushing the full orchestration flow into `main.rs` and makes the con
   Parses `[NEEDS OWNER: …]` markers in the tracked files (not those in code spans or fenced code blocks) into questions with options and a recommendation, and writes an answer back: the marker becomes the answer and `- Q: … → A: …` is added under `## Clarifications` / `### Session <date>`.
 
 - `src/lotar.rs`
-  Runs the `lotar` CLI for `--ask lotar`: adds a question comment per open owner question and reads the task's comments to find the answers.
+  Runs the `lotar` CLI for `--ask lotar`: adds a question comment per open owner question and reads the task's comments to find the answers (answer comments, and plain `Answer: …` / `… (answered in <ID>)` comments).
 
 - `src/output.rs`
   For non-dry-run executions, creates `.autospec/logs/`, ensures `.autospec/results.tsv` exists with the header `doc\titerations\tstatus\tdelta\ttimestamp`, appends tab-delimited result rows, and writes per-iteration and per-run logs. In all modes it formats human-readable console output.

@@ -68,8 +68,9 @@ impl AskedQuestions {
                 detail: format!("unexpected JSON: {error}"),
             })?;
 
-        let mut by_date = HashMap::new();
-        let mut asked = Vec::new();
+        // Questions in comment order: date, title, options; `open` is false once answered.
+        let mut questions: Vec<(&str, String, &Question, bool)> = Vec::new();
+        let mut answers = HashMap::new();
         for comment in &list.items {
             if let Some(question) = &comment.question {
                 let title = comment
@@ -79,41 +80,28 @@ impl AskedQuestions {
                     .unwrap_or_default()
                     .trim()
                     .to_owned();
-                by_date.insert(comment.date.as_str(), (title.clone(), question));
-                asked.push(title);
+                questions.push((comment.date.as_str(), title, question, true));
+            } else if let Some(answer) = &comment.answer {
+                let Some(entry) = questions
+                    .iter_mut()
+                    .find(|(date, ..)| *date == answer.to.as_str())
+                else {
+                    continue;
+                };
+                let text = structured_answer(entry.2, answer);
+                if !text.is_empty() {
+                    entry.3 = false;
+                    answers.insert(entry.1.clone(), text);
+                }
+            } else if let Some(text) = plain_answer(&comment.text) {
+                // Like `lotar comment --answer` without `--to`: the last question still open.
+                if let Some(entry) = questions.iter_mut().rev().find(|entry| entry.3) {
+                    entry.3 = false;
+                    answers.insert(entry.1.clone(), text);
+                }
             }
         }
-
-        let mut answers = HashMap::new();
-        for comment in &list.items {
-            let Some(answer) = &comment.answer else {
-                continue;
-            };
-            let Some((title, question)) = by_date.get(answer.to.as_str()) else {
-                continue;
-            };
-            let labels = answer
-                .choice
-                .iter()
-                .map(|key| {
-                    question
-                        .options
-                        .iter()
-                        .find(|option| &option.key == key)
-                        .map_or(key.as_str(), |option| option.label.as_str())
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            let note = answer.note.as_deref().map(str::trim).unwrap_or_default();
-            let text = match (labels.is_empty(), note.is_empty()) {
-                (false, false) => format!("{labels} ({note})"),
-                (false, true) => labels,
-                (true, _) => note.to_owned(),
-            };
-            if !text.is_empty() {
-                answers.insert(title.clone(), text);
-            }
-        }
+        let asked = questions.into_iter().map(|(_, title, ..)| title).collect();
 
         Ok(Self { asked, answers })
     }
@@ -126,6 +114,50 @@ impl AskedQuestions {
         let title = question.title();
         self.asked.contains(&title)
     }
+}
+
+/// Chosen option labels, then the note in parentheses; a free-text answer is the note.
+fn structured_answer(question: &Question, answer: &Answer) -> String {
+    let labels = answer
+        .choice
+        .iter()
+        .map(|key| {
+            question
+                .options
+                .iter()
+                .find(|option| &option.key == key)
+                .map_or(key.as_str(), |option| option.label.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let note = answer.note.as_deref().map(str::trim).unwrap_or_default();
+    match (labels.is_empty(), note.is_empty()) {
+        (false, false) => format!("{labels} ({note})"),
+        (false, true) => labels,
+        (true, _) => note.to_owned(),
+    }
+}
+
+/// A plain comment that answers: it starts with `Answer:` or ends with `(answered in <ID>)`, as the owner's
+/// answers relayed by triage do. The answer is the text without both, on one line; `None` when nothing is left.
+fn plain_answer(text: &str) -> Option<String> {
+    let text = text.trim();
+    let prefixed = text.strip_prefix("Answer:");
+    let mut rest = prefixed.unwrap_or(text).trim_end();
+    let mut relayed = false;
+    if let Some(open) = rest.rfind("(answered in ")
+        && let Some(id) = rest[open + "(answered in ".len()..].strip_suffix(')')
+        && !id.is_empty()
+        && !id.contains(char::is_whitespace)
+    {
+        rest = &rest[..open];
+        relayed = true;
+    }
+    if prefixed.is_none() && !relayed {
+        return None;
+    }
+    let answer = rest.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!answer.is_empty()).then_some(answer)
 }
 
 /// Files the question as a question comment on `task`.
@@ -221,5 +253,62 @@ mod tests {
         let question = &parse_questions("docs/a.md", "[NEEDS OWNER: Q? | a) x]")[0];
 
         assert_eq!(asked.answer(question), Some("later"));
+    }
+
+    #[test]
+    fn relayed_plain_answer_answers_the_last_open_question() {
+        // As on ASP-5: triage relays the owner's answer as a plain comment.
+        let json = r#"{"items": [
+          {"date": "d1", "text": "docs/a.md: First?\n\nOptions:\n- a: x", "question": {"options": [{"key": "a", "label": "x"}]}},
+          {"date": "d2", "text": "docs/a.md: Second?\n\nOptions:\n- yes: Yes", "question": {"options": [{"key": "yes", "label": "Yes"}]}},
+          {"date": "d3", "author": "claude", "text": "Working on it; tests pass."},
+          {"date": "d4", "author": "mallox", "text": "Answer: yes-ask (Adopt, plus --ask lotar filing each as a question comment) (answered in INBOX-477)"},
+          {"date": "d5", "author": "mallox", "text": "  30 days,\n  not more (answered in INBOX-478)"}
+        ]}"#;
+        let asked = AskedQuestions::parse(json).unwrap();
+        let questions = parse_questions(
+            "docs/a.md",
+            "[NEEDS OWNER: First? | a) x]\n[NEEDS OWNER: Second? | yes) Yes]\n",
+        );
+
+        assert_eq!(
+            asked.answer(&questions[1]),
+            Some("yes-ask (Adopt, plus --ask lotar filing each as a question comment)")
+        );
+        assert_eq!(asked.answer(&questions[0]), Some("30 days, not more"));
+    }
+
+    #[test]
+    fn plain_comments_that_are_not_answers_answer_nothing() {
+        let json = r#"{"items": [
+          {"date": "d0", "text": "Answer: before any question (answered in INBOX-1)"},
+          {"date": "d1", "text": "docs/a.md: Q?\n\nOptions:\n- a: x", "question": {"options": [{"key": "a", "label": "x"}]}},
+          {"date": "d2", "text": "Done as answered; see (answered in the thread)"},
+          {"date": "d3", "text": "Answer:   (answered in INBOX-2)"}
+        ]}"#;
+        let asked = AskedQuestions::parse(json).unwrap();
+        let question = &parse_questions("docs/a.md", "[NEEDS OWNER: Q? | a) x]")[0];
+
+        assert!(asked.was_asked(question));
+        assert_eq!(asked.answer(question), None);
+    }
+
+    #[test]
+    fn plain_answer_skips_answered_questions_and_a_later_structured_answer_wins() {
+        let json = r#"{"items": [
+          {"date": "d1", "text": "docs/a.md: First?\n\nOptions:\n- a: x", "question": {"options": [{"key": "a", "label": "x"}]}},
+          {"date": "d2", "text": "docs/a.md: Second?\n\nOptions:\n- a: y", "question": {"options": [{"key": "a", "label": "y"}]}},
+          {"date": "d3", "text": "Answer: a (y)", "answer": {"to": "d2", "choice": ["a"]}},
+          {"date": "d4", "text": "Answer: my own words"},
+          {"date": "d5", "text": "Answer: a (x)", "answer": {"to": "d1", "choice": ["a"]}}
+        ]}"#;
+        let asked = AskedQuestions::parse(json).unwrap();
+        let questions = parse_questions(
+            "docs/a.md",
+            "[NEEDS OWNER: First? | a) x]\n[NEEDS OWNER: Second? | a) y]\n",
+        );
+
+        assert_eq!(asked.answer(&questions[1]), Some("y"));
+        assert_eq!(asked.answer(&questions[0]), Some("x"));
     }
 }

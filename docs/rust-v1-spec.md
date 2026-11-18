@@ -175,6 +175,7 @@ A point only the owner can decide is marked in the doc as `[NEEDS OWNER: <questi
 
 - when a stop condition writes `converged` and any tracked file still holds a marker, write status `needs-owner` instead, list each question with its options after the summary, and exit with status `3` once all docs are done
 - with `--ask lotar --ask-task <ID>`, after a `needs-owner` stop add each question not yet asked on task `<ID>` as a lotar question comment titled `<doc path>: <question>`, with the marker's options and recommendation
+- an answer is a lotar answer comment (`lotar comment --answer`) to that question, or a plain comment whose text starts with `Answer:` or ends with `(answered in <ID>)` (as triage relays the owner's answers); a plain one answers the last question still open when it was posted, with the text minus that prefix and suffix on one line; when a question gets two answers, the later comment wins; other plain comments are not answers
 - at the start of each doc's loop with `--ask lotar`, read the task's comments; for every marker whose question has an answer, replace the marker with the answer (chosen option labels, then the note in parentheses; a free-text answer is the note) and add `- Q: <question> → A: <answer>` under `## Clarifications` / `### Session <YYYY-MM-DD>`; commit these edits as `autospec: <doc key> - owner answers` unless `--no-commit`
 
 ### near-convergence rule

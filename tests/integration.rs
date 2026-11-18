@@ -326,17 +326,8 @@ fn ask_lotar_requires_a_task() {
 #[cfg(unix)]
 #[test]
 fn ask_lotar_files_questions_and_writes_back_answers() {
-    use std::os::unix::fs::symlink;
-
     let temp = tempdir().unwrap();
-    let bin = temp.path().join("bin");
-    fs::create_dir_all(&bin).unwrap();
-    symlink(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/fake_lotar.py"),
-        bin.join("lotar"),
-    )
-    .unwrap();
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let path = fake_lotar_path(temp.path());
     let log = temp.path().join("lotar.log");
 
     // First run: the question is filed once on the task.
@@ -364,13 +355,81 @@ fn ask_lotar_files_questions_and_writes_back_answers() {
         ]}"#,
     )
     .unwrap();
+    run_with_lotar_answers(temp.path(), &path, &log, &comments)
+        .success()
+        .stdout(predicate::str::contains("Converged:     1"));
+
+    let doc = fs::read_to_string(temp.path().join("docs/product.md")).unwrap();
+    assert!(!doc.contains("[NEEDS OWNER:"));
+    assert!(doc.contains("- retention: 1 year\n"));
+    assert!(doc.contains("## Clarifications\n\n### Session "));
+    assert!(doc.contains("- Q: How long do we keep data? → A: 1 year\n"));
+    assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn ask_lotar_writes_back_a_plain_relayed_answer() {
+    // Triage relays the owner's answer as a plain comment when `--answer` fails (ASP-7).
+    let temp = tempdir().unwrap();
+    let path = fake_lotar_path(temp.path());
+    let log = temp.path().join("lotar.log");
+    owner_question_run(temp.path())
+        .args(["--ask", "lotar", "--ask-task", "DOCS-1"])
+        .env("PATH", &path)
+        .env("FAKE_LOTAR_LOG", &log)
+        .assert()
+        .code(3);
+
+    let comments = temp.path().join("comments.json");
+    fs::write(
+        &comments,
+        r#"{"items": [
+          {"date": "2026-11-18T00:00:00+00:00", "text": "docs/product.md: How long do we keep data?\n\nOptions:\n- a: 30 days (recommended)\n- b: 1 year",
+           "question": {"options": [{"key": "a", "label": "30 days"}, {"key": "b", "label": "1 year"}], "recommended": "a"}},
+          {"date": "2026-11-18T00:30:00+00:00", "author": "claude", "text": "Filed the question."},
+          {"date": "2026-11-18T01:00:00+00:00", "author": "mallox", "text": "Answer: 2 years (answered in INBOX-9)"}
+        ]}"#,
+    )
+    .unwrap();
+    run_with_lotar_answers(temp.path(), &path, &log, &comments)
+        .success()
+        .stdout(predicate::str::contains("Converged:     1"));
+
+    let doc = fs::read_to_string(temp.path().join("docs/product.md")).unwrap();
+    assert!(!doc.contains("[NEEDS OWNER:"));
+    assert!(doc.contains("- retention: 2 years\n"));
+    assert!(doc.contains("- Q: How long do we keep data? → A: 2 years\n"));
+}
+
+/// A `bin` folder in `root` with the fake lotar, and a PATH that finds it first.
+#[cfg(unix)]
+fn fake_lotar_path(root: &Path) -> String {
+    let bin = root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/fake_lotar.py"),
+        bin.join("lotar"),
+    )
+    .unwrap();
+    format!("{}:{}", bin.display(), std::env::var("PATH").unwrap())
+}
+
+/// The run after the owner answered: lotar lists `comments`, the agent changes nothing.
+#[cfg(unix)]
+fn run_with_lotar_answers(
+    root: &Path,
+    path: &str,
+    log: &Path,
+    comments: &Path,
+) -> assert_cmd::assert::Assert {
     let template = format!(
         "python3 {} --mode no-op --prompt {{prompt}} --cwd {{cwd}} --log {{log}}",
         fake_agent_path().display()
     );
     Command::cargo_bin("autospec")
         .unwrap()
-        .current_dir(temp.path())
+        .current_dir(root)
         .args([
             "docs/product.md",
             "--agent",
@@ -384,17 +443,8 @@ fn ask_lotar_files_questions_and_writes_back_answers() {
             "--ask-task",
             "DOCS-1",
         ])
-        .env("PATH", &path)
-        .env("FAKE_LOTAR_LOG", &log)
-        .env("FAKE_LOTAR_COMMENTS", &comments)
+        .env("PATH", path)
+        .env("FAKE_LOTAR_LOG", log)
+        .env("FAKE_LOTAR_COMMENTS", comments)
         .assert()
-        .success()
-        .stdout(predicate::str::contains("Converged:     1"));
-
-    let doc = fs::read_to_string(temp.path().join("docs/product.md")).unwrap();
-    assert!(!doc.contains("[NEEDS OWNER:"));
-    assert!(doc.contains("- retention: 1 year\n"));
-    assert!(doc.contains("## Clarifications\n\n### Session "));
-    assert!(doc.contains("- Q: How long do we keep data? → A: 1 year\n"));
-    assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 1);
 }

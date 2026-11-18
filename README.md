@@ -39,7 +39,7 @@ A decision only the owner can make is not the agent's to guess. The agent marks 
 autospec --ask lotar --ask-task DOCS-12 docs/product.md
 ```
 
-This adds each open question once as a lotar question comment on `DOCS-12`. The next run writes the answers back into the doc as dated `- Q: … → A: …` lines under `## Clarifications` and converges the doc on them.
+This adds each open question once as a lotar question comment on `DOCS-12`. An answer is a lotar answer to it, or a plain comment starting `Answer:` or ending `(answered in <ID>)`, which answers the last open question. The next run writes the answers back into the doc as dated `- Q: … → A: …` lines under `## Clarifications` and converges the doc on them.
 
 It supports three working modes:
 
