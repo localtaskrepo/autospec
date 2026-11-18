@@ -116,7 +116,8 @@ impl AskedQuestions {
     }
 }
 
-/// Chosen option labels, then the note in parentheses; a free-text answer is the note.
+/// Chosen option labels, then the note in parentheses; a free-text answer is the note. A note relayed by
+/// triage ends with `(answered in <ID>)`, dropped here; a note that is only that suffix counts as none.
 fn structured_answer(question: &Question, answer: &Answer) -> String {
     let labels = answer
         .choice
@@ -130,7 +131,8 @@ fn structured_answer(question: &Question, answer: &Answer) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    let note = answer.note.as_deref().map(str::trim).unwrap_or_default();
+    let note = answer.note.as_deref().unwrap_or_default();
+    let note = strip_relay_suffix(note).unwrap_or(note).trim();
     match (labels.is_empty(), note.is_empty()) {
         (false, false) => format!("{labels} ({note})"),
         (false, true) => labels,
@@ -143,21 +145,22 @@ fn structured_answer(question: &Question, answer: &Answer) -> String {
 fn plain_answer(text: &str) -> Option<String> {
     let text = text.trim();
     let prefixed = text.strip_prefix("Answer:");
-    let mut rest = prefixed.unwrap_or(text).trim_end();
-    let mut relayed = false;
-    if let Some(open) = rest.rfind("(answered in ")
-        && let Some(id) = rest[open + "(answered in ".len()..].strip_suffix(')')
-        && !id.is_empty()
-        && !id.contains(char::is_whitespace)
-    {
-        rest = &rest[..open];
-        relayed = true;
-    }
-    if prefixed.is_none() && !relayed {
+    let rest = prefixed.unwrap_or(text);
+    let relayed = strip_relay_suffix(rest);
+    if prefixed.is_none() && relayed.is_none() {
         return None;
     }
+    let rest = relayed.unwrap_or(rest);
     let answer = rest.split_whitespace().collect::<Vec<_>>().join(" ");
     (!answer.is_empty()).then_some(answer)
+}
+
+/// `text` without a trailing `(answered in <ID>)`; `None` when it has none.
+fn strip_relay_suffix(text: &str) -> Option<&str> {
+    let text = text.trim_end();
+    let open = text.rfind("(answered in ")?;
+    let id = text[open + "(answered in ".len()..].strip_suffix(')')?;
+    (!id.is_empty() && !id.contains(char::is_whitespace)).then_some(&text[..open])
 }
 
 /// Files the question as a question comment on `task`.
@@ -253,6 +256,28 @@ mod tests {
         let question = &parse_questions("docs/a.md", "[NEEDS OWNER: Q? | a) x]")[0];
 
         assert_eq!(asked.answer(question), Some("later"));
+    }
+
+    #[test]
+    fn relayed_structured_answer_drops_the_relay_suffix_from_the_note() {
+        // As on STD-182: the owner picked an option only, triage relayed it with `--answer`.
+        let json = r#"{"items": [
+          {"date": "d1", "text": "docs/a.md: First?\n\nOptions:\n- wontdo: Close as WontDo", "question": {"options": [{"key": "wontdo", "label": "Close as WontDo"}]}},
+          {"date": "d2", "text": "docs/a.md: Second?\n\nOptions:\n- a: 1 year", "question": {"options": [{"key": "a", "label": "1 year"}]}},
+          {"date": "d3", "text": "Answer: wontdo (Close as WontDo)\n\n(answered in INBOX-347)", "answer": {"to": "d1", "choice": ["wontdo"], "note": "(answered in INBOX-347)"}},
+          {"date": "d4", "text": "Answer: a (1 year)", "answer": {"to": "d2", "choice": ["a"], "note": "legal asks for it\n(answered in INBOX-348)"}}
+        ]}"#;
+        let asked = AskedQuestions::parse(json).unwrap();
+        let questions = parse_questions(
+            "docs/a.md",
+            "[NEEDS OWNER: First? | wontdo) Close as WontDo]\n[NEEDS OWNER: Second? | a) 1 year]\n",
+        );
+
+        assert_eq!(asked.answer(&questions[0]), Some("Close as WontDo"));
+        assert_eq!(
+            asked.answer(&questions[1]),
+            Some("1 year (legal asks for it)")
+        );
     }
 
     #[test]

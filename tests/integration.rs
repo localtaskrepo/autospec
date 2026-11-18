@@ -344,14 +344,14 @@ fn ask_lotar_files_questions_and_writes_back_answers() {
     assert!(calls.contains(r#""--option", "a: 30 days", "--option", "b: 1 year""#));
     assert!(calls.contains(r#""--recommend", "a""#));
 
-    // Second run: the owner answered b; the answer replaces the marker and is recorded.
+    // Second run: the owner answered b, relayed by triage (ASP-10); the answer replaces the marker and is recorded.
     let comments = temp.path().join("comments.json");
     fs::write(
         &comments,
         r#"{"items": [
           {"date": "2026-11-18T00:00:00+00:00", "text": "docs/product.md: How long do we keep data?\n\nOptions:\n- a: 30 days (recommended)\n- b: 1 year",
            "question": {"options": [{"key": "a", "label": "30 days"}, {"key": "b", "label": "1 year"}], "recommended": "a"}},
-          {"date": "2026-11-18T01:00:00+00:00", "text": "Answer: b (1 year)", "answer": {"to": "2026-11-18T00:00:00+00:00", "choice": ["b"]}}
+          {"date": "2026-11-18T01:00:00+00:00", "text": "Answer: b (1 year)\n\n(answered in INBOX-9)", "answer": {"to": "2026-11-18T00:00:00+00:00", "choice": ["b"], "note": "(answered in INBOX-9)"}}
         ]}"#,
     )
     .unwrap();
