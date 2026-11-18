@@ -98,7 +98,8 @@ fn code_ranges(text: &str) -> Vec<Code> {
         }
 
         let opens = fence_run(line).filter(|(ch, _, info)| *ch == '~' || !info.contains('`'));
-        if (opens.is_some() || line.trim().is_empty())
+        let heading = is_atx_heading(line);
+        if (opens.is_some() || line.trim().is_empty() || heading || is_list_item(line))
             && let Some(range) = paragraph.take()
         {
             ranges.extend(code_spans(text, range));
@@ -106,6 +107,7 @@ fn code_ranges(text: &str) -> Vec<Code> {
         match opens {
             Some((ch, len, _)) => fence = Some((ch, len, line_range.start)),
             None if line.trim().is_empty() => {}
+            None if heading => ranges.extend(code_spans(text, line_range)),
             None => {
                 paragraph =
                     Some(paragraph.map_or(line_range.clone(), |range| range.start..line_range.end));
@@ -123,6 +125,34 @@ fn code_ranges(text: &str) -> Vec<Code> {
     }
     ranges.sort_by_key(|code| code.range.start);
     ranges
+}
+
+/// Whether `line` is an ATX heading: up to 3 spaces, 1 to 6 `#`, then whitespace or the line end.
+fn is_atx_heading(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(' ');
+    let hashes = trimmed.chars().take_while(|ch| *ch == '#').count();
+    line.len() - trimmed.len() <= 3
+        && (1..=6).contains(&hashes)
+        && trimmed[hashes..]
+            .chars()
+            .next()
+            .is_none_or(char::is_whitespace)
+}
+
+/// Whether `line` starts a list item: `-`, `*`, `+` or 1 to 9 digits and `.` or `)`, then
+/// whitespace or the line end.
+fn is_list_item(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
+    let marker = match trimmed[digits..].chars().next() {
+        Some('-' | '*' | '+') if digits == 0 => 1,
+        Some('.' | ')') if (1..=9).contains(&digits) => digits + 1,
+        _ => return false,
+    };
+    trimmed[marker..]
+        .chars()
+        .next()
+        .is_none_or(char::is_whitespace)
 }
 
 /// The fence character, its run length and the rest of the line, when `line` starts a fence.
@@ -457,6 +487,33 @@ mod tests {
 
         assert_eq!(questions.len(), 1);
         assert_eq!(questions[0].raw, MARKER);
+    }
+
+    #[test]
+    fn code_spans_end_at_list_items_and_headings() {
+        let cases = [
+            "- item `a\n- [NEEDS OWNER: q | a) y] `b`\n",
+            "1. item `a\n2) [NEEDS OWNER: q | a) y] `b`\n",
+            "  * nested `a\n+ [NEEDS OWNER: q | a) y] `b`\n",
+            "# Title `a\n[NEEDS OWNER: q | a) y] `b`\n",
+            "Text `a\n### [NEEDS OWNER: q | a) y] `b`\n",
+        ];
+        for text in cases {
+            assert_eq!(parse_questions("docs/a.md", text).len(), 1, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn code_spans_still_run_within_one_list_item_or_heading() {
+        let cases = [
+            "- item `[NEEDS OWNER: q\n  | a) y]` end\n",
+            "## `[NEEDS OWNER: q | a) y]`\n",
+            "-1 `x\n--- [NEEDS OWNER: q | a) y] `\n",
+            "#hashtag `x\n[NEEDS OWNER: q | a) y] `\n",
+        ];
+        for text in cases {
+            assert!(parse_questions("docs/a.md", text).is_empty(), "{text:?}");
+        }
     }
 
     #[test]
