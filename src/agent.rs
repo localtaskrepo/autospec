@@ -306,7 +306,11 @@ fn prepare_builtin_command(
             }
         }
         BuiltInAgent::Codex => {
-            args.extend(["exec".to_owned(), "--full-auto".to_owned()]);
+            args.extend([
+                "exec".to_owned(),
+                "-s".to_owned(),
+                "workspace-write".to_owned(),
+            ]);
             push_model(&mut args, "-m", request);
             args.extend([
                 "-C".to_owned(),
@@ -521,6 +525,39 @@ mod tests {
                 prepared.args
             );
         }
+    }
+
+    #[test]
+    fn codex_runs_in_the_workspace_write_sandbox() {
+        let request = AgentRunRequest {
+            prompt: "refine the doc".to_owned(),
+            log_path: PathBuf::from("/repo/.autospec/logs/agent.log"),
+            model: "gpt-5".to_owned(),
+            effort: String::new(),
+            timeout: None,
+            cwd: PathBuf::from("/repo"),
+            dry_run: false,
+        };
+
+        let command =
+            prepare_builtin_command(BuiltInAgent::Codex, PathBuf::from("codex"), &request).unwrap();
+
+        assert_eq!(
+            command.args,
+            [
+                "exec",
+                "-s",
+                "workspace-write",
+                "-m",
+                "gpt-5",
+                "-C",
+                "/repo",
+                "-o",
+                "/repo/.autospec/logs/agent.log",
+                "-",
+            ]
+        );
+        assert_eq!(command.stdin.as_deref(), Some("refine the doc"));
     }
 
     #[test]

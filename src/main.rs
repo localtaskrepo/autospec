@@ -11,6 +11,13 @@ fn main() {
     let result = RuntimeConfig::from_cli(cli).and_then(autospec::engine::run);
 
     match result {
+        Ok(summary) if summary.agent_failures > 0 => {
+            eprintln!(
+                "ERROR: the agent failed or timed out on {} doc(s); see the logs",
+                summary.agent_failures
+            );
+            std::process::exit(1);
+        }
         Ok(summary) if summary.needs_owner() => std::process::exit(NEEDS_OWNER_EXIT),
         Ok(_) => {}
         Err(error) => {

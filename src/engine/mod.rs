@@ -19,6 +19,8 @@ pub(crate) enum DocOutcome {
     /// Converged, but `[NEEDS OWNER: …]` questions are still open.
     NeedsOwner(Vec<OwnerQuestion>),
     NotConverged,
+    /// The agent exited nonzero or timed out.
+    AgentFailed,
 }
 
 /// What a whole run ended with; `main` turns it into the exit status.
@@ -26,6 +28,8 @@ pub(crate) enum DocOutcome {
 pub struct RunSummary {
     /// Open owner questions of the docs that ended `needs-owner`.
     pub owner_questions: Vec<OwnerQuestion>,
+    /// Docs (or sweeps) stopped by an agent that exited nonzero or timed out.
+    pub agent_failures: u32,
 }
 
 impl RunSummary {
@@ -105,6 +109,10 @@ fn run_sweep(
             "needs-owner"
         }
         DocOutcome::NotConverged => "not converged",
+        DocOutcome::AgentFailed => {
+            summary.agent_failures = 1;
+            "agent failed"
+        }
     };
     println!("\n{}", "═".repeat(51));
     println!("  SUMMARY");
@@ -171,6 +179,7 @@ fn run_docs(
                 summary.owner_questions.extend(questions);
             }
             DocOutcome::NotConverged => failed += 1,
+            DocOutcome::AgentFailed => summary.agent_failures += 1,
         }
     }
 
@@ -181,6 +190,7 @@ fn run_docs(
     println!("  Converged:     {converged}");
     println!("  Needs owner:   {needs_owner}");
     println!("  Not converged: {failed}");
+    println!("  Agent failed:  {}", summary.agent_failures);
     println!(
         "  Results:       {}",
         outputs.results_display(config.dry_run)

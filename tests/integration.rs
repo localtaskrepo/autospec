@@ -58,6 +58,39 @@ fn no_op_custom_agent_converges() {
 }
 
 #[test]
+fn failing_agent_exits_nonzero() {
+    let temp = tempdir().unwrap();
+    copy_fixture(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/docs-basic"),
+        &temp.path().join("docs"),
+    );
+    let template = format!(
+        "python3 {} --mode fail --prompt {{prompt}} --cwd {{cwd}} --log {{log}}",
+        fake_agent_path().display()
+    );
+
+    Command::cargo_bin("autospec")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "docs/product.md",
+            "--agent",
+            "custom",
+            "--agent-cmd",
+            &template,
+            "--no-commit",
+            "--allow-dirty",
+        ])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("Agent failed:  1"))
+        .stderr(predicate::str::contains("the agent failed or timed out"));
+
+    let results = fs::read_to_string(temp.path().join(".autospec/results.tsv")).unwrap();
+    assert!(results.contains("docs/product.md\t1\tagent-failed"));
+}
+
+#[test]
 fn one_pass_custom_agent_near_converges() {
     let temp = tempdir().unwrap();
     let docs_dir = temp.path().join("docs");

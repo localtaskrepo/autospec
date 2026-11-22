@@ -103,28 +103,12 @@ impl<'a> ConvergenceRunner<'a> {
         match agent_result {
             AgentRunResult::TimedOut => {
                 return self
-                    .finish_iteration(
-                        iteration,
-                        IterationOutcome {
-                            status: "agent-timeout",
-                            delta: "",
-                            converged: false,
-                        },
-                        format!("[{iteration}] agent-timeout"),
-                    )
+                    .finish_agent_failure(iteration, "agent-timeout")
                     .map(Some);
             }
             AgentRunResult::Failed => {
                 return self
-                    .finish_iteration(
-                        iteration,
-                        IterationOutcome {
-                            status: "agent-failed",
-                            delta: "",
-                            converged: false,
-                        },
-                        format!("[{iteration}] agent-failed"),
-                    )
+                    .finish_agent_failure(iteration, "agent-failed")
                     .map(Some);
             }
             AgentRunResult::Completed => {}
@@ -276,6 +260,12 @@ impl<'a> ConvergenceRunner<'a> {
             },
             format!("[{iteration}] no-diff -> converged"),
         )
+    }
+
+    /// Records an agent run that failed or timed out; the run exits non-zero.
+    fn finish_agent_failure(&self, iteration: u32, status: &str) -> Result<DocOutcome> {
+        self.record_iteration_status(iteration, status, "", format!("[{iteration}] {status}"))?;
+        Ok(DocOutcome::AgentFailed)
     }
 
     /// Records the stop. A converged scope that still holds `[NEEDS OWNER: …]` markers

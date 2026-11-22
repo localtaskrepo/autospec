@@ -166,6 +166,7 @@ The convergence engine must use repository file state as the source of truth.
 - repeated full-scope snapshot hash indicating oscillation; seed the seen-state set with the initial pre-run snapshot and write status `oscillating`
 - agent timeout; write status `agent-timeout`
 - agent process exits nonzero before timeout; write status `agent-failed`
+- after all docs are done, a run where any doc or sweep stopped `agent-timeout` or `agent-failed` exits with status `1`; this wins over status `3`
 - commit failure when commits are enabled; write status `commit-failed`
 - maximum iterations reached without another stop condition; write status `not-converged`
 

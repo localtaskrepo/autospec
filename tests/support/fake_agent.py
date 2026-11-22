@@ -37,6 +37,9 @@ def main() -> int:
     if args.mode == "no-op":
         return 0
 
+    if args.mode == "fail":
+        return 1
+
     if args.mode == "one-pass":
         state = cwd / ".fake-agent-once"
         if not state.exists() and target_path is not None:
