@@ -130,7 +130,7 @@ impl RuntimeConfig {
 
         let target = resolve_target(&repo_root, &target_input)?;
 
-        let model = resolve_string(model, "MODEL", "gpt-5.4");
+        let model = resolve_string(model, "MODEL", "");
         let effort = resolve_string(effort, "EFFORT", "");
         let goal = resolve_string(goal, "GOAL", "");
         let max_iters = resolve_u32(max_iters, "MAX_ITERS", 10, 1)?;

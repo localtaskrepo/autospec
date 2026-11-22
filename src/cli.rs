@@ -69,7 +69,7 @@ pub struct CliArgs {
         long,
         help_heading = "Agent",
         help = "Model name passed to the agent",
-        long_help = "Model name passed through to the selected agent CLI. Defaults to gpt-5.4 unless MODEL is set."
+        long_help = "Model name passed through to the selected agent CLI. Without --model or MODEL, built-in agents get no model flag and use their own configured default; {model} in a custom command is empty."
     )]
     pub model: Option<String>,
 

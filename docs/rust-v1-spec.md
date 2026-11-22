@@ -65,7 +65,7 @@ Required CLI parameters and flags:
 - `--stable-iters <n>` where `n` is an integer `>= 1`; default `2`
 - `--agent copilot|claude|codex|gemini|custom`
 - `--agent-cmd <template>` custom command template; valid only when the effective agent is `custom`
-- `--model <name>` opaque model string passed through to the agent; default `gpt-5.4`
+- `--model <name>` opaque model string passed through to the agent; default empty string, which built-in agents get as no model flag so their own configured default applies
 - `--effort <level>` opaque effort string passed through unchanged to built-in agents that declare effort support; default empty string
 - `--agent-timeout <seconds>` where `<seconds>` is an integer `>= 0`; `0` disables timeout; default `600`
 - `--doc-dir <path>` default target path used when the positional target is omitted; it may resolve to either a file or directory under the repo root; default `docs`

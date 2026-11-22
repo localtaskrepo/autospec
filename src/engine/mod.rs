@@ -303,7 +303,9 @@ fn write_back_answers(
 fn print_header(config: &RuntimeConfig, discovery: &ScopeDiscovery, agent: &ResolvedAgent) {
     println!("autospec - doc convergence loop");
     println!("agent:      {}", agent.display_name());
-    println!("model:      {}", config.model);
+    if !config.model.is_empty() {
+        println!("model:      {}", config.model);
+    }
     if !config.effort.is_empty() {
         println!("effort:     {}", config.effort);
     }

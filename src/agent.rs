@@ -161,11 +161,15 @@ impl ResolvedAgent {
 
 pub fn run_agent(agent: &ResolvedAgent, request: &AgentRunRequest) -> Result<AgentRunResult> {
     if request.dry_run {
-        println!(
-            "  [dry-run] {} --model {}",
-            agent.display_name(),
-            request.model
-        );
+        if request.model.is_empty() {
+            println!("  [dry-run] {}", agent.display_name());
+        } else {
+            println!(
+                "  [dry-run] {} --model {}",
+                agent.display_name(),
+                request.model
+            );
+        }
         return Ok(AgentRunResult::Completed);
     }
 
@@ -276,11 +280,10 @@ fn prepare_builtin_command(
                 "-p".to_owned(),
                 request.prompt.clone(),
                 "--yolo".to_owned(),
-                "--model".to_owned(),
-                request.model.clone(),
                 format!("--share={log_path}"),
                 "--no-alt-screen".to_owned(),
             ]);
+            push_model(&mut args, "--model", request);
             if !request.effort.is_empty() {
                 args.push("--effort".to_owned());
                 args.push(request.effort.clone());
@@ -292,23 +295,20 @@ fn prepare_builtin_command(
                 "-p".to_owned(),
                 request.prompt.clone(),
                 "--dangerously-skip-permissions".to_owned(),
-                "--model".to_owned(),
-                request.model.clone(),
                 "--output-format".to_owned(),
                 "text".to_owned(),
                 "--no-session-persistence".to_owned(),
             ]);
+            push_model(&mut args, "--model", request);
             if !request.effort.is_empty() {
                 args.push("--effort".to_owned());
                 args.push(request.effort.clone());
             }
         }
         BuiltInAgent::Codex => {
+            args.extend(["exec".to_owned(), "--full-auto".to_owned()]);
+            push_model(&mut args, "-m", request);
             args.extend([
-                "exec".to_owned(),
-                "--full-auto".to_owned(),
-                "-m".to_owned(),
-                request.model.clone(),
                 "-C".to_owned(),
                 request.cwd.to_string_lossy().into_owned(),
                 "-o".to_owned(),
@@ -323,11 +323,10 @@ fn prepare_builtin_command(
                 "-p".to_owned(),
                 request.prompt.clone(),
                 "-y".to_owned(),
-                "-m".to_owned(),
-                request.model.clone(),
                 "--output-format".to_owned(),
                 "text".to_owned(),
             ]);
+            push_model(&mut args, "-m", request);
         }
     }
 
@@ -337,6 +336,14 @@ fn prepare_builtin_command(
         stdin,
         agent_writes_log,
     })
+}
+
+/// An empty model leaves the choice to the agent's own configuration.
+fn push_model(args: &mut Vec<String>, flag: &str, request: &AgentRunRequest) {
+    if !request.model.is_empty() {
+        args.push(flag.to_owned());
+        args.push(request.model.clone());
+    }
 }
 
 fn prepare_custom_command(template: &str, request: &AgentRunRequest) -> Result<PreparedCommand> {
@@ -466,6 +473,54 @@ mod tests {
             error,
             AutospecError::MissingBuiltInAgent("gemini")
         ));
+    }
+
+    fn request_with_model(model: &str) -> AgentRunRequest {
+        AgentRunRequest {
+            prompt: "prompt".to_owned(),
+            model: model.to_owned(),
+            effort: String::new(),
+            cwd: PathBuf::from("/repo"),
+            log_path: PathBuf::from("/repo/agent.log"),
+            timeout: None,
+            dry_run: false,
+        }
+    }
+
+    #[test]
+    fn builtin_agents_omit_model_flag_without_a_model() {
+        for kind in [
+            BuiltInAgent::Copilot,
+            BuiltInAgent::Claude,
+            BuiltInAgent::Codex,
+            BuiltInAgent::Gemini,
+        ] {
+            let prepared =
+                prepare_builtin_command(kind, PathBuf::from("agent"), &request_with_model(""))
+                    .unwrap();
+            assert!(
+                !prepared
+                    .args
+                    .iter()
+                    .any(|arg| arg == "-m" || arg == "--model"),
+                "{kind:?} got a model flag: {:?}",
+                prepared.args
+            );
+
+            let prepared = prepare_builtin_command(
+                kind,
+                PathBuf::from("agent"),
+                &request_with_model("some-model"),
+            )
+            .unwrap();
+            assert!(
+                prepared.args.windows(2).any(
+                    |pair| (pair[0] == "-m" || pair[0] == "--model") && pair[1] == "some-model"
+                ),
+                "{kind:?} lost the model: {:?}",
+                prepared.args
+            );
+        }
     }
 
     #[test]
