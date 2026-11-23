@@ -6,7 +6,7 @@ Thanks for helping improve autospec.
 
 Prereqs:
 
-- Rust stable with `rustfmt` and `clippy` installed
+- rustup: it installs the Rust version pinned in `rust-toolchain.toml`, with `rustfmt` and `clippy`
 - at least one supported agent CLI if you want to run the full tool manually
 
 Build and validate:

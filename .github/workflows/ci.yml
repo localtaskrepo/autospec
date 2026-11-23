@@ -25,11 +25,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
+      - name: Install Rust toolchain from rust-toolchain.toml
+        shell: bash
+        run: rustup toolchain install
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -79,10 +77,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
+      - name: Install Rust toolchain from rust-toolchain.toml
+        shell: bash
+        run: rustup toolchain install
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
