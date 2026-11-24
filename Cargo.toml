@@ -6,7 +6,6 @@ authors = ["Ravi Gairola <mallox@pyxzl.net>"]
 description = "Converge markdown specs with local AI coding agent CLIs"
 license = "MIT"
 repository = "https://github.com/localtaskrepo/autospec"
-homepage = "https://github.com/localtaskrepo/autospec"
 readme = "README.md"
 keywords = ["cli", "documentation", "agents", "specs"]
 categories = ["command-line-utilities", "development-tools"]
